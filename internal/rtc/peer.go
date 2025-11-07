@@ -2,6 +2,7 @@ package rtc
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 
@@ -50,14 +51,32 @@ func (p *Peer) handleSignal(msg signal.Message) {
 }
 
 func (p *Peer) newPeerConnection() (*webrtc.PeerConnection, error) {
-	return webrtc.NewPeerConnection(webrtc.Configuration{
+	config := webrtc.Configuration{
 		ICETransportPolicy: webrtc.ICETransportPolicyAll,
 		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			},
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
 		},
+	}
+	logger.Debug(fmt.Sprintf("Using ICE servers: %+v", config.ICEServers))
+
+	pc, err := webrtc.NewPeerConnection(config)
+	if err != nil {
+		return nil, err
+	}
+
+	pc.OnICEGatheringStateChange(func(s webrtc.ICEGathererState) {
+		logger.Debug("[ICE-Gathering] " + s.String())
 	})
+
+	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		logger.Debug("[ICE-Connection] " + s.String())
+	})
+
+	pc.OnSignalingStateChange(func(s webrtc.SignalingState) {
+		logger.Debug("[Signaling] " + s.String())
+	})
+
+	return pc, nil
 }
 
 func (p *Peer) startOffer() {
@@ -117,6 +136,20 @@ func (p *Peer) handleOffer(data string) {
 	pc, _ := p.newPeerConnection()
 	p.pc = pc
 
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c == nil {
+			return
+		}
+		data, _ := json.Marshal(c.ToJSON())
+		p.sig.Send(signal.Message{
+			Type:       "candidate",
+			Data:       string(data),
+			SenderId:   p.selfID,
+			ReceiverId: p.peerID,
+			RoomId:     p.roomID,
+		})
+	})
+
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		logger.Debug("PeerConnection state: " + s.String())
 	})
@@ -149,14 +182,25 @@ func (p *Peer) handleOffer(data string) {
 
 func (p *Peer) handleAnswer(data string) {
 	var answer webrtc.SessionDescription
-	json.Unmarshal([]byte(data), &answer)
-	p.pc.SetRemoteDescription(answer)
+	if err := json.Unmarshal([]byte(data), &answer); err != nil {
+		logger.Debug("unmarshal answer error: " + err.Error())
+		return
+	}
+	if err := p.pc.SetRemoteDescription(answer); err != nil {
+		logger.Debug("SetRemoteDescription(answer) error: " + err.Error())
+	}
 }
 
 func (p *Peer) handleCandidate(data string) {
+	logger.Debug("[Remote-Candidate] " + data)
 	var cand webrtc.ICECandidateInit
-	json.Unmarshal([]byte(data), &cand)
-	p.pc.AddICECandidate(cand)
+	if err := json.Unmarshal([]byte(data), &cand); err != nil {
+		logger.Debug("unmarshal candidate error: " + err.Error())
+		return
+	}
+	if err := p.pc.AddICECandidate(cand); err != nil {
+		logger.Debug("AddICECandidate error: " + err.Error())
+	}
 }
 
 func (p *Peer) DataChannelTunnel() *webrtc.DataChannel {
