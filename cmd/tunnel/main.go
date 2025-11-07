@@ -23,13 +23,13 @@ func main() {
 	remotePort := flag.Int("remote-port", 25575, "Remote port to forward to")
 	flag.IntVar(remotePort, "r", 25575, "Remote port to forward to (alias)")
 
+	url := flag.String("url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
+	roomID := flag.String("room", "p2p-tunnel-room", "Room ID for signaling")
+
 	flag.Parse()
 
 	logger.Debug("listenPort: " + strconv.Itoa(*listenPort))
 	logger.Debug("remotePort: " + strconv.Itoa(*remotePort))
-
-	url := flag.String("url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
-	roomID := flag.String("room", "p2p-tunnel-room", "Room ID for signaling")
 
 	selfID := uuid.New().String()
 
