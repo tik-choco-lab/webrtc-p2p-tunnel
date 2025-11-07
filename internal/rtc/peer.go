@@ -49,8 +49,19 @@ func (p *Peer) handleSignal(msg signal.Message) {
 	}
 }
 
+func (p *Peer) newPeerConnection() (*webrtc.PeerConnection, error) {
+	return webrtc.NewPeerConnection(webrtc.Configuration{
+		ICETransportPolicy: webrtc.ICETransportPolicyAll,
+		ICEServers: []webrtc.ICEServer{
+			{
+				URLs: []string{"stun:stun.l.google.com:19302"},
+			},
+		},
+	})
+}
+
 func (p *Peer) startOffer() {
-	pc, _ := webrtc.NewPeerConnection(webrtc.Configuration{})
+	pc, _ := p.newPeerConnection()
 	p.pc = pc
 
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
@@ -103,7 +114,7 @@ func (p *Peer) initChatDC(dc *webrtc.DataChannel) {
 }
 
 func (p *Peer) handleOffer(data string) {
-	pc, _ := webrtc.NewPeerConnection(webrtc.Configuration{})
+	pc, _ := p.newPeerConnection()
 	p.pc = pc
 
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
