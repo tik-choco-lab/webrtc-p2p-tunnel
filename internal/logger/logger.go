@@ -11,19 +11,25 @@ import (
 )
 
 var (
-	log       *zap.Logger
-	once      sync.Once
-	debugMode bool
+	log  *zap.Logger
+	once sync.Once
 )
 
+type Options struct {
+	Debug     bool
+	UseStderr bool
+}
+
 func Init() {
-	InitWithDebug(false)
+	InitWithOptions(Options{})
 }
 
 func InitWithDebug(debug bool) {
-	once.Do(func() {
-		debugMode = debug
+	InitWithOptions(Options{Debug: debug})
+}
 
+func InitWithOptions(opts Options) {
+	once.Do(func() {
 		lumberJackLogger := &lumberjack.Logger{
 			Filename:   "./logs/app.log",
 			MaxSize:    10,
@@ -33,7 +39,7 @@ func InitWithDebug(debug bool) {
 		}
 
 		logLevel := zap.InfoLevel
-		if debug {
+		if opts.Debug {
 			logLevel = zap.DebugLevel
 		}
 
@@ -50,14 +56,30 @@ func InitWithDebug(debug bool) {
 			logLevel,
 		)
 
-		if debug {
+		if opts.Debug {
 			consoleEncoderConfig := zap.NewDevelopmentEncoderConfig()
 			consoleEncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 			consoleEncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05")
 
+			consoleOutput := os.Stdout
+			if opts.UseStderr {
+				consoleOutput = os.Stderr
+			}
+
 			consoleCore := zapcore.NewCore(
 				zapcore.NewConsoleEncoder(consoleEncoderConfig),
-				zapcore.AddSync(os.Stdout),
+				zapcore.AddSync(consoleOutput),
+				logLevel,
+			)
+
+			log = zap.New(zapcore.NewTee(fileCore, consoleCore))
+		} else if opts.UseStderr {
+			consoleEncoderConfig := zap.NewDevelopmentEncoderConfig()
+			consoleEncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05")
+
+			consoleCore := zapcore.NewCore(
+				zapcore.NewConsoleEncoder(consoleEncoderConfig),
+				zapcore.AddSync(os.Stderr),
 				logLevel,
 			)
 
