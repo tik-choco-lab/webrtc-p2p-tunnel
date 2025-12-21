@@ -23,13 +23,28 @@ type Peer struct {
 	tunnelMessageCallbacks []func(webrtc.DataChannelMessage)
 	tunnelOpenCallbacks    []func()
 	tunnelCloseCallbacks   []func()
+	reconnecting           bool
 }
 
 func NewPeer(sig *signal.Client, selfID, roomID string) *Peer {
 	p := &Peer{sig: sig, selfID: selfID, roomID: roomID}
 	sig.OnMessage(p.handleSignal)
+
+	sig.OnReconnect(func() {
+		logger.Debug("WebSocket reconnected, re-requesting peer connection")
+		p.requestPeer()
+	})
+
 	logger.Debug("created Peer: " + selfID)
 	return p
+}
+
+func (p *Peer) requestPeer() {
+	p.sig.Send(signal.Message{
+		Type:     "Request",
+		SenderId: p.selfID,
+		RoomId:   p.roomID,
+	})
 }
 
 func (p *Peer) handleSignal(msg signal.Message) {
@@ -99,6 +114,14 @@ func (p *Peer) startOffer() {
 
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		logger.Debug("PeerConnection state: " + s.String())
+
+		// 接続が失敗または切断された場合、再接続を試みる
+		if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateDisconnected {
+			logger.Debug("PeerConnection " + s.String() + ", attempting to reconnect...")
+			go p.handlePeerReconnect()
+		} else if s == webrtc.PeerConnectionStateClosed {
+			logger.Debug("PeerConnection closed")
+		}
 	})
 
 	dcTunnel, _ := pc.CreateDataChannel("tunnel", nil)
@@ -152,6 +175,14 @@ func (p *Peer) handleOffer(data string) {
 
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		logger.Debug("PeerConnection state: " + s.String())
+
+		// 接続が失敗または切断された場合、再接続を試みる
+		if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateDisconnected {
+			logger.Debug("PeerConnection " + s.String() + ", attempting to reconnect...")
+			go p.handlePeerReconnect()
+		} else if s == webrtc.PeerConnectionStateClosed {
+			logger.Debug("PeerConnection closed")
+		}
 	})
 
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
@@ -249,4 +280,25 @@ func (p *Peer) initTunnelDC(dc *webrtc.DataChannel) {
 
 func (p *Peer) SelfID() string {
 	return p.selfID
+}
+
+func (p *Peer) handlePeerReconnect() {
+	if p.reconnecting {
+		return
+	}
+	p.reconnecting = true
+	defer func() { p.reconnecting = false }()
+
+	logger.Debug("Closing old peer connection...")
+	if p.pc != nil {
+		p.pc.Close()
+		p.pc = nil
+	}
+
+	// DataChannelもクリア
+	p.dcTunnel = nil
+	p.dcChat = nil
+
+	logger.Debug("Re-requesting peer connection...")
+	p.requestPeer()
 }
