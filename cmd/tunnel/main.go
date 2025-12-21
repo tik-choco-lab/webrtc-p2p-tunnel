@@ -37,7 +37,7 @@ func main() {
 	flag.BoolVar(isServer, "s", false, "Run as server mode (alias)")
 
 	// MCP/stdio flags
-	stdioMode := flag.Bool("stdio", false, "Run in stdio bridge mode (for MCP host like Claude Desktop)")
+	stdioMode := flag.Bool("stdio", false, "Run in stdio bridge mode (for MCP host)")
 	proxyCmd := flag.String("proxy-cmd", "", "Command to execute and proxy stdio (for remote MCP server)")
 
 	// Common flags
