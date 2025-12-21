@@ -6,4 +6,5 @@ type Message struct {
 	SenderId   string `json:"SenderId"`
 	ReceiverId string `json:"ReceiverId,omitempty"`
 	RoomId     string `json:"RoomId,omitempty"`
+	Role       string `json:"Role,omitempty"`
 }

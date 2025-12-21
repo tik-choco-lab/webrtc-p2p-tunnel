@@ -21,7 +21,7 @@ const (
 )
 
 type manager struct {
-	peer       *rtc.Peer
+	rtcManager *rtc.RTCManager
 	mu         sync.RWMutex
 	conns      map[string]*tunnelConn
 	remotePort int
@@ -29,25 +29,30 @@ type manager struct {
 
 type tunnelConn struct {
 	conn         net.Conn
+	peerID       string
 	notifyRemote bool
 }
 
-func ListenAndServe(peer *rtc.Peer, listenPort int, remotePort int) error {
-	mgr := newManager(peer)
+func ListenAndServe(rtcManager *rtc.RTCManager, listenPort int, remotePort int) error {
+	mgr := newManager(rtcManager)
 	return mgr.serve(listenPort, remotePort)
 }
 
-func newManager(peer *rtc.Peer) *manager {
+func newManager(rtcManager *rtc.RTCManager) *manager {
 	m := &manager{
-		peer:  peer,
-		conns: make(map[string]*tunnelConn),
+		rtcManager: rtcManager,
+		conns:      make(map[string]*tunnelConn),
 	}
 
-	peer.OnTunnelMessage(m.onTunnelMessage)
-	peer.OnTunnelClose(func() {
-		logger.Debug("tunnel data channel closed; closing active TCP connections")
-		m.closeAll()
+	rtcManager.OnTunnelMessage(func(peerID string, data []byte) {
+		m.onTunnelMessage(peerID, data)
 	})
+
+	rtcManager.OnTunnelClose(func(peerID string) {
+		logger.Debug("tunnel data channel closed for peer " + peerID + "; closing related TCP connections")
+		m.closeAllForPeer(peerID)
+	})
+
 	return m
 }
 
@@ -70,25 +75,29 @@ func (m *manager) serve(listenPort int, remotePort int) error {
 			logger.Error("failed to accept tcp connection: " + err.Error())
 			continue
 		}
-		go m.handleLocalConnection(conn, remotePort)
+		go func() {
+			m.handleLocalConnection(conn)
+		}()
 	}
 }
 
-func (m *manager) handleLocalConnection(conn net.Conn, remotePort int) {
+func (m *manager) handleLocalConnection(conn net.Conn) {
 	connID := uuid.NewString()
-	m.trackConn(connID, conn, true)
 
-	if err := m.waitForTunnelReady(tunnelReadyTimeout); err != nil {
+	peerID, err := m.waitForTunnelReady(tunnelReadyTimeout)
+	if err != nil {
 		logger.Error("tunnel not ready: " + err.Error())
-		m.closeConn(connID, false)
+		conn.Close()
 		return
 	}
+
+	m.trackConn(connID, conn, peerID, true)
 
 	connectMsg := rtc.TunnelMessage{
 		Type:   "connect",
 		ConnID: connID,
 	}
-	if err := m.send(connectMsg); err != nil {
+	if err := m.sendTo(peerID, connectMsg); err != nil {
 		logger.Error("failed to send tunnel connect message: " + err.Error())
 		m.closeConn(connID, false)
 		return
@@ -97,15 +106,29 @@ func (m *manager) handleLocalConnection(conn net.Conn, remotePort int) {
 	go m.forwardTCPToDC(connID)
 }
 
-func (m *manager) waitForTunnelReady(timeout time.Duration) error {
+func (m *manager) waitForTunnelReady(timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		dc := m.peer.DataChannelTunnel()
-		if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-			return nil
+		serverPeers := m.rtcManager.GetServerPeers()
+		for _, peer := range serverPeers {
+			dc := peer.DataChannelTunnel()
+			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+				logger.Debug("Selected server peer: " + peer.PeerID())
+				return peer.PeerID(), nil
+			}
 		}
+
+		peers := m.rtcManager.GetAllPeers()
+		for _, peer := range peers {
+			dc := peer.DataChannelTunnel()
+			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+				logger.Debug("Selected peer (no server available): " + peer.PeerID())
+				return peer.PeerID(), nil
+			}
+		}
+
 		if time.Now().After(deadline) {
-			return errors.New("tunnel data channel not open")
+			return "", errors.New("tunnel data channel not open")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -121,7 +144,7 @@ func (m *manager) forwardTCPToDC(connID string) {
 		n, err := tc.conn.Read(buf)
 		if n > 0 {
 			payload := append([]byte(nil), buf[:n]...)
-			if errSend := m.send(rtc.TunnelMessage{
+			if errSend := m.sendTo(tc.peerID, rtc.TunnelMessage{
 				Type:    "data",
 				ConnID:  connID,
 				Payload: payload,
@@ -141,15 +164,15 @@ func (m *manager) forwardTCPToDC(connID string) {
 	}
 }
 
-func (m *manager) onTunnelMessage(msg webrtc.DataChannelMessage) {
+func (m *manager) onTunnelMessage(peerID string, data []byte) {
 	var tm rtc.TunnelMessage
-	if err := json.Unmarshal(msg.Data, &tm); err != nil {
+	if err := json.Unmarshal(data, &tm); err != nil {
 		logger.Error("failed to decode tunnel message: " + err.Error())
 		return
 	}
 	switch tm.Type {
 	case "connect":
-		m.handleRemoteConnect(tm)
+		m.handleRemoteConnect(peerID, tm)
 	case "data":
 		m.handleRemoteData(tm)
 	case "close":
@@ -159,18 +182,18 @@ func (m *manager) onTunnelMessage(msg webrtc.DataChannelMessage) {
 	}
 }
 
-func (m *manager) handleRemoteConnect(tm rtc.TunnelMessage) {
+func (m *manager) handleRemoteConnect(peerID string, tm rtc.TunnelMessage) {
 	addr := fmt.Sprintf("127.0.0.1:%d", m.remotePort)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		logger.Error("failed to connect to remote target: " + err.Error())
-		_ = m.send(rtc.TunnelMessage{
+		_ = m.sendTo(peerID, rtc.TunnelMessage{
 			Type:   "close",
 			ConnID: tm.ConnID,
 		})
 		return
 	}
-	m.trackConn(tm.ConnID, conn, true)
+	m.trackConn(tm.ConnID, conn, peerID, true)
 	go m.forwardTCPToDC(tm.ConnID)
 }
 
@@ -189,9 +212,9 @@ func (m *manager) handleRemoteData(tm rtc.TunnelMessage) {
 	}
 }
 
-func (m *manager) trackConn(connID string, conn net.Conn, notifyRemote bool) {
+func (m *manager) trackConn(connID string, conn net.Conn, peerID string, notifyRemote bool) {
 	m.mu.Lock()
-	m.conns[connID] = &tunnelConn{conn: conn, notifyRemote: notifyRemote}
+	m.conns[connID] = &tunnelConn{conn: conn, peerID: peerID, notifyRemote: notifyRemote}
 	m.mu.Unlock()
 }
 
@@ -217,34 +240,40 @@ func (m *manager) closeConn(connID string, notifyRemote bool) {
 	}
 	_ = tc.conn.Close()
 	if notifyRemote && tc.notifyRemote {
-		if err := m.send(rtc.TunnelMessage{Type: "close", ConnID: connID}); err != nil {
+		if err := m.sendTo(tc.peerID, rtc.TunnelMessage{Type: "close", ConnID: connID}); err != nil {
 			logger.Error("failed to send tunnel close message: " + err.Error())
 		}
 	}
 }
 
-func (m *manager) closeAll() {
-	m.mu.Lock()
-	conns := make([]*tunnelConn, 0, len(m.conns))
-	for id, tc := range m.conns {
-		tc.notifyRemote = false
-		conns = append(conns, tc)
-		delete(m.conns, id)
-	}
-	m.mu.Unlock()
-	for _, tc := range conns {
-		_ = tc.conn.Close()
-	}
-}
-
-func (m *manager) send(msg rtc.TunnelMessage) error {
+func (m *manager) sendTo(peerID string, msg rtc.TunnelMessage) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	dc := m.peer.DataChannelTunnel()
+	peer := m.rtcManager.GetPeer(peerID)
+	if peer == nil {
+		return errors.New("peer not found: " + peerID)
+	}
+	dc := peer.DataChannelTunnel()
 	if dc == nil {
 		return errors.New("tunnel data channel not ready")
 	}
 	return dc.Send(data)
+}
+
+func (m *manager) closeAllForPeer(peerID string) {
+	m.mu.Lock()
+	var toClose []*tunnelConn
+	for id, tc := range m.conns {
+		if tc.peerID == peerID {
+			tc.notifyRemote = false
+			toClose = append(toClose, tc)
+			delete(m.conns, id)
+		}
+	}
+	m.mu.Unlock()
+	for _, tc := range toClose {
+		_ = tc.conn.Close()
+	}
 }

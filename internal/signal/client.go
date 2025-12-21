@@ -18,6 +18,7 @@ type Client struct {
 	roomID         string
 	wsURL          string
 	mu             sync.Mutex
+	writeMu        sync.Mutex
 	reconnecting   bool
 	maxRetries     int
 	retryCount     int
@@ -85,13 +86,17 @@ func (c *Client) OnReconnect(fn func()) {
 func (c *Client) Send(msg Message) error {
 	c.mu.Lock()
 	conn := c.conn
+	closed := c.closed
 	c.mu.Unlock()
 
-	if conn == nil {
+	if conn == nil || closed {
 		return websocket.ErrCloseSent
 	}
 
 	data, _ := json.Marshal(msg)
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return conn.WriteMessage(websocket.TextMessage, data)
 }
 
@@ -109,7 +114,6 @@ func (c *Client) readLoop() {
 		if err != nil {
 			logger.Debug("WebSocket read error: " + err.Error())
 
-			// クローズ済みの場合は再接続しない
 			c.mu.Lock()
 			closed := c.closed
 			c.mu.Unlock()
@@ -118,7 +122,6 @@ func (c *Client) readLoop() {
 				return
 			}
 
-			// 再接続を試みる
 			go c.reconnect()
 			return
 		}
