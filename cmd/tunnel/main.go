@@ -30,8 +30,8 @@ func main() {
 	listenPort := flag.Int("listen", -1, "Local port to listen on")
 	flag.IntVar(listenPort, "l", -1, "Local TCP listen (alias)")
 
-	remotePort := flag.Int("remote-port", -1, "Remote port to forward to")
-	flag.IntVar(remotePort, "r", -1, "Remote port to forward to (alias)")
+	remoteAddr := flag.String("remote", "", "Remote address to forward to (e.g. localhost:8080 or 192.168.1.10:22)")
+	flag.StringVar(remoteAddr, "r", "", "Remote address (alias)")
 
 	isServer := flag.Bool("server", false, "Run as server mode (data receiver)")
 	flag.BoolVar(isServer, "s", false, "Run as server mode (alias)")
@@ -115,14 +115,14 @@ func main() {
 
 	} else {
 		// 従来のTCPトンネル/チャットモード
-		chatOnlyMode := *listenPort == -1 && *remotePort == -1
+		chatOnlyMode := *listenPort == -1 && *remoteAddr == ""
 
 		if chatOnlyMode {
 			println("=== Chat Mode ===")
 			println("Type a message and press Enter to send.")
 		} else {
 			logger.Debug("listenPort: " + strconv.Itoa(*listenPort))
-			logger.Debug("remotePort: " + strconv.Itoa(*remotePort))
+			logger.Debug("remoteAddr: " + *remoteAddr)
 			logger.Debug("isServer: " + strconv.FormatBool(*isServer))
 		}
 
@@ -135,7 +135,7 @@ func main() {
 				logger.Debug("Tunnel opened with peer: " + peerID)
 			})
 
-			go tcp.ListenAndServe(manager, *listenPort, *remotePort)
+			go tcp.ListenAndServe(manager, *listenPort, *remoteAddr)
 		}
 
 		go func() {

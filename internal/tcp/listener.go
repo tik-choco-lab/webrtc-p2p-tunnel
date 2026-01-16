@@ -24,7 +24,7 @@ type manager struct {
 	rtcManager *rtc.RTCManager
 	mu         sync.RWMutex
 	conns      map[string]*tunnelConn
-	remotePort int
+	remoteAddr string
 }
 
 type tunnelConn struct {
@@ -33,9 +33,9 @@ type tunnelConn struct {
 	notifyRemote bool
 }
 
-func ListenAndServe(rtcManager *rtc.RTCManager, listenPort int, remotePort int) error {
+func ListenAndServe(rtcManager *rtc.RTCManager, listenPort int, remoteAddr string) error {
 	mgr := newManager(rtcManager)
-	return mgr.serve(listenPort, remotePort)
+	return mgr.serve(listenPort, remoteAddr)
 }
 
 func newManager(rtcManager *rtc.RTCManager) *manager {
@@ -56,8 +56,15 @@ func newManager(rtcManager *rtc.RTCManager) *manager {
 	return m
 }
 
-func (m *manager) serve(listenPort int, remotePort int) error {
-	m.remotePort = remotePort
+func (m *manager) serve(listenPort int, remoteAddr string) error {
+	if remoteAddr != "" {
+		if _, err := net.ResolveTCPAddr("tcp", remoteAddr); err != nil {
+			if _, portErr := net.LookupPort("tcp", remoteAddr); portErr == nil {
+				remoteAddr = "127.0.0.1:" + remoteAddr
+			}
+		}
+	}
+	m.remoteAddr = remoteAddr
 	if listenPort == -1 {
 		logger.Debug("No local listen port specified; skipping TCP server")
 		return nil
@@ -183,10 +190,10 @@ func (m *manager) onTunnelMessage(peerID string, data []byte) {
 }
 
 func (m *manager) handleRemoteConnect(peerID string, tm rtc.TunnelMessage) {
-	addr := fmt.Sprintf("127.0.0.1:%d", m.remotePort)
+	addr := m.remoteAddr
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		logger.Error("failed to connect to remote target: " + err.Error())
+		logger.Error("failed to connect to remote target (" + addr + "): " + err.Error())
 		_ = m.sendTo(peerID, rtc.TunnelMessage{
 			Type:   "close",
 			ConnID: tm.ConnID,
