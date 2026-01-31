@@ -32,8 +32,11 @@ type RTCManager struct {
 
 	chatHandlers        []func(string, string)
 	tunnelMsgHandlers   []func(string, []byte)
+	stdioMsgHandlers    []func(string, []byte)
 	tunnelOpenHandlers  []func(string)
+	stdioOpenHandlers   []func(string)
 	tunnelCloseHandlers []func(string)
+	stdioCloseHandlers  []func(string)
 	peerConnHandlers    []func(string)
 	quit                chan struct{}
 }
@@ -208,13 +211,28 @@ func (m *RTCManager) notifyTunnelMsg(pID string, d []byte) {
 		h(pID, d)
 	}
 }
+func (m *RTCManager) notifyStdioMsg(pID string, d []byte) {
+	for _, h := range m.stdioMsgHandlers {
+		h(pID, d)
+	}
+}
 func (m *RTCManager) notifyTunnelOpen(pID string) {
 	for _, h := range m.tunnelOpenHandlers {
 		h(pID)
 	}
 }
+func (m *RTCManager) notifyStdioOpen(pID string) {
+	for _, h := range m.stdioOpenHandlers {
+		h(pID)
+	}
+}
 func (m *RTCManager) notifyTunnelClose(pID string) {
 	for _, h := range m.tunnelCloseHandlers {
+		h(pID)
+	}
+}
+func (m *RTCManager) notifyStdioClose(pID string) {
+	for _, h := range m.stdioCloseHandlers {
 		h(pID)
 	}
 }
@@ -231,11 +249,20 @@ func (m *RTCManager) OnChatMessage(h func(string, string)) {
 func (m *RTCManager) OnTunnelMessage(h func(string, []byte)) {
 	m.tunnelMsgHandlers = append(m.tunnelMsgHandlers, h)
 }
+func (m *RTCManager) OnStdioMessage(h func(string, []byte)) {
+	m.stdioMsgHandlers = append(m.stdioMsgHandlers, h)
+}
 func (m *RTCManager) OnTunnelOpen(h func(string)) {
 	m.tunnelOpenHandlers = append(m.tunnelOpenHandlers, h)
 }
+func (m *RTCManager) OnStdioOpen(h func(string)) {
+	m.stdioOpenHandlers = append(m.stdioOpenHandlers, h)
+}
 func (m *RTCManager) OnTunnelClose(h func(string)) {
 	m.tunnelCloseHandlers = append(m.tunnelCloseHandlers, h)
+}
+func (m *RTCManager) OnStdioClose(h func(string)) {
+	m.stdioCloseHandlers = append(m.stdioCloseHandlers, h)
 }
 func (m *RTCManager) OnPeerConnected(h func(string)) {
 	m.peerConnHandlers = append(m.peerConnHandlers, h)

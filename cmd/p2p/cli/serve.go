@@ -44,6 +44,7 @@ var serveCmd = &cobra.Command{
   # Execute command in specific room
   p2p serve my-room -- python server.py`,
 	Run: func(cmd *cobra.Command, args []string) {
+		serveForwards = nil
 		dashIdx := cmd.ArgsLenAtDash()
 		var currentRoomID string
 		var remoteCommand []string

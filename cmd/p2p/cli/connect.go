@@ -32,6 +32,7 @@ var connectCmd = &cobra.Command{
   p2p connect my-room udp://:9000`,
 	Args: cobra.RangeArgs(1, 2),
 	Run: func(cmd *cobra.Command, args []string) {
+		connectForwards = nil
 		currentRoomID := args[0]
 		if len(args) > 1 {
 			connectForwards = append(connectForwards, args[1])

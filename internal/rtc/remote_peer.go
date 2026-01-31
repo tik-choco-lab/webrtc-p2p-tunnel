@@ -25,6 +25,7 @@ type RemotePeer struct {
 	dcTunnel *webrtc.DataChannel
 	dcChat   *webrtc.DataChannel
 	dcSignal *webrtc.DataChannel
+	dcStdio  *webrtc.DataChannel
 
 	manager      *RTCManager
 	mu           sync.RWMutex
@@ -49,6 +50,11 @@ func (rp *RemotePeer) DataChannelChat() *webrtc.DataChannel {
 	rp.mu.RLock()
 	defer rp.mu.RUnlock()
 	return rp.dcChat
+}
+func (rp *RemotePeer) DataChannelStdio() *webrtc.DataChannel {
+	rp.mu.RLock()
+	defer rp.mu.RUnlock()
+	return rp.dcStdio
 }
 
 func (rp *RemotePeer) newPeerConnection() (*webrtc.PeerConnection, error) {
@@ -101,7 +107,7 @@ func (rp *RemotePeer) startOffer() error {
 	rp.pc = pc
 	rp.mu.Unlock()
 
-	for _, label := range []string{"tunnel", "chat", "signal"} {
+	for _, label := range []string{"tunnel", "chat", "signal", "stdio"} {
 		dc, err := pc.CreateDataChannel(label, nil)
 		if err != nil {
 			return err
@@ -113,6 +119,8 @@ func (rp *RemotePeer) startOffer() error {
 			rp.initChatDC(dc)
 		case "signal":
 			rp.initSignalDC(dc)
+		case "stdio":
+			rp.initStdioDC(dc)
 		}
 	}
 
@@ -152,6 +160,8 @@ func (rp *RemotePeer) handleOffer(data string) error {
 			rp.initTunnelDC(dc)
 		case "signal":
 			rp.initSignalDC(dc)
+		case "stdio":
+			rp.initStdioDC(dc)
 		}
 	})
 
@@ -240,11 +250,22 @@ func (rp *RemotePeer) initSignalDC(dc *webrtc.DataChannel) {
 	})
 }
 
+func (rp *RemotePeer) initStdioDC(dc *webrtc.DataChannel) {
+	rp.mu.Lock()
+	rp.dcStdio = dc
+	rp.mu.Unlock()
+	dc.OnOpen(func() { rp.manager.notifyStdioOpen(rp.peerID) })
+	dc.OnClose(func() { rp.manager.notifyStdioClose(rp.peerID) })
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		rp.manager.notifyStdioMsg(rp.peerID, msg.Data)
+	})
+}
+
 func (rp *RemotePeer) teardown() *webrtc.PeerConnection {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 	pc := rp.pc
-	rp.pc, rp.dcTunnel, rp.dcChat, rp.dcSignal = nil, nil, nil, nil
+	rp.pc, rp.dcTunnel, rp.dcChat, rp.dcSignal, rp.dcStdio = nil, nil, nil, nil, nil
 	return pc
 }
 

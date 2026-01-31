@@ -28,7 +28,7 @@ func NewBridge(manager *rtc.RTCManager) *Bridge {
 }
 
 func (b *Bridge) Run() error {
-	b.manager.OnTunnelMessage(func(peerID string, data []byte) {
+	b.manager.OnStdioMessage(func(peerID string, data []byte) {
 		b.mu.Lock()
 		if b.activePeer == nil || b.activePeer.PeerID() != peerID {
 			b.activePeer = b.manager.GetPeer(peerID)
@@ -44,7 +44,7 @@ func (b *Bridge) Run() error {
 		}
 	})
 
-	b.manager.OnTunnelOpen(func(peerID string) {
+	b.manager.OnStdioOpen(func(peerID string) {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 
@@ -55,7 +55,7 @@ func (b *Bridge) Run() error {
 
 			if len(b.buffer) > 0 {
 				logger.Debug("Flushing buffered stdin data...")
-				dc := b.activePeer.DataChannelTunnel()
+				dc := b.activePeer.DataChannelStdio()
 				if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
 					for _, data := range b.buffer {
 						dc.Send(data)
@@ -66,7 +66,7 @@ func (b *Bridge) Run() error {
 		}
 	})
 
-	b.manager.OnTunnelClose(func(peerID string) {
+	b.manager.OnStdioClose(func(peerID string) {
 		b.mu.Lock()
 		if b.activePeer != nil && b.activePeer.PeerID() == peerID {
 			b.connected = false
@@ -94,7 +94,7 @@ func (b *Bridge) readStdin() {
 
 			b.mu.Lock()
 			if b.connected && b.activePeer != nil {
-				dc := b.activePeer.DataChannelTunnel()
+				dc := b.activePeer.DataChannelStdio()
 				if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
 					if err := dc.Send(data); err != nil {
 						logger.Debug("Failed to send stdin data: " + err.Error())
