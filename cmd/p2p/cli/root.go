@@ -130,8 +130,6 @@ func init() {
 }
 
 func initConnect() {
-	connectCmd.Flags().StringSliceVarP(&connectForwards, "forward", "F", []string{}, "Local listen address to forward (e.g. tcp://:8080 or udp://:9000)")
-
 	connectCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
 
 	viper.BindPFlag("url", connectCmd.Flags().Lookup("url"))
@@ -140,8 +138,6 @@ func initConnect() {
 }
 
 func initServe() {
-	serveCmd.Flags().StringSliceVarP(&serveForwards, "forward", "F", []string{}, "Remote target address to dial (e.g. tcp://127.0.0.1:80 or udp://127.0.0.1:9000)")
-
 	serveCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
 
 	viper.BindPFlag("url", serveCmd.Flags().Lookup("url"))

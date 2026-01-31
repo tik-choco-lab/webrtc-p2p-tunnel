@@ -26,8 +26,10 @@ var connectCmd = &cobra.Command{
 	Example: `  # Standard I/O bridge only
   p2p connect my-room
 
-  # Standard I/O + Port forwarding
-  p2p connect my-room tcp://:8080`,
+  # Standard I/O + Local listen (TCP or UDP)
+  p2p connect my-room :8080
+  p2p connect my-room tcp://:8080
+  p2p connect my-room udp://:9000`,
 	Args: cobra.RangeArgs(1, 2),
 	Run: func(cmd *cobra.Command, args []string) {
 		currentRoomID := args[0]

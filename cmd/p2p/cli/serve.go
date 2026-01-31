@@ -36,8 +36,10 @@ var serveCmd = &cobra.Command{
 	Example: `  # Auto-generate room and serve local port 80
   p2p serve :80
 
-  # Specific room and forward target
+  # Specific room and forward target (TCP or UDP)
+  p2p serve my-room :80
   p2p serve my-room tcp://127.0.0.1:80
+  p2p serve my-room udp://127.0.0.1:9000
 
   # Execute command in specific room
   p2p serve my-room -- python server.py`,
