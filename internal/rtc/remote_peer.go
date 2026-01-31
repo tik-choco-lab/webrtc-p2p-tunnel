@@ -3,14 +3,20 @@ package rtc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v3"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
 )
 
-var errDataChannelNotReady = errors.New("data channel not ready")
+var (
+	errDataChannelNotReady = errors.New("data channel not ready")
+	msgSeq                 uint64
+)
 
 type RemotePeer struct {
 	pc       *webrtc.PeerConnection
@@ -23,60 +29,22 @@ type RemotePeer struct {
 	manager      *RTCManager
 	mu           sync.RWMutex
 	reconnecting bool
-
-	chatCallbacks          []func(string)
-	tunnelMessageCallbacks []func(webrtc.DataChannelMessage)
-	tunnelOpenCallbacks    []func()
-	tunnelCloseCallbacks   []func()
 }
 
 func newRemotePeer(manager *RTCManager, peerID string) *RemotePeer {
-	return &RemotePeer{
-		manager: manager,
-		peerID:  peerID,
-	}
+	return &RemotePeer{manager: manager, peerID: peerID}
 }
 
-func (rp *RemotePeer) PeerID() string {
-	return rp.peerID
-}
-
-func (rp *RemotePeer) Role() PeerRole {
-	rp.mu.RLock()
-	defer rp.mu.RUnlock()
-	return rp.role
-}
-
-func (rp *RemotePeer) IsServer() bool {
-	rp.mu.RLock()
-	defer rp.mu.RUnlock()
-	return rp.role == RoleServer
-}
-
-func (rp *RemotePeer) isConnected() bool {
-	rp.mu.RLock()
-	pc := rp.pc
-	rp.mu.RUnlock()
-
-	if pc == nil {
-		return false
-	}
-	state := pc.ConnectionState()
-	return state == webrtc.PeerConnectionStateConnected || state == webrtc.PeerConnectionStateConnecting
-}
-
-func (rp *RemotePeer) setRole(role PeerRole) {
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-	rp.role = role
-}
+func (rp *RemotePeer) PeerID() string        { return rp.peerID }
+func (rp *RemotePeer) Role() PeerRole        { rp.mu.RLock(); defer rp.mu.RUnlock(); return rp.role }
+func (rp *RemotePeer) IsServer() bool        { return rp.Role() == RoleServer }
+func (rp *RemotePeer) setRole(role PeerRole) { rp.mu.Lock(); defer rp.mu.Unlock(); rp.role = role }
 
 func (rp *RemotePeer) DataChannelTunnel() *webrtc.DataChannel {
 	rp.mu.RLock()
 	defer rp.mu.RUnlock()
 	return rp.dcTunnel
 }
-
 func (rp *RemotePeer) DataChannelChat() *webrtc.DataChannel {
 	rp.mu.RLock()
 	defer rp.mu.RUnlock()
@@ -84,180 +52,99 @@ func (rp *RemotePeer) DataChannelChat() *webrtc.DataChannel {
 }
 
 func (rp *RemotePeer) newPeerConnection() (*webrtc.PeerConnection, error) {
-	config := webrtc.Configuration{
-		ICETransportPolicy: webrtc.ICETransportPolicyAll,
-		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
-		},
-	}
-
-	pc, err := webrtc.NewPeerConnection(config)
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	pc.OnICEGatheringStateChange(func(s webrtc.ICEGathererState) {
-		logger.Debug("[" + rp.peerID + "][ICE-Gathering] " + s.String())
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c == nil {
+			return
+		}
+		data, _ := json.Marshal(c.ToJSON())
+		rp.manager.sendSignal(signal.Message{
+			Type:       "candidate",
+			Data:       string(data),
+			SenderId:   rp.manager.selfID,
+			ReceiverId: rp.peerID,
+			RoomId:     rp.manager.roomID,
+		})
 	})
 
-	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
-		logger.Debug("[" + rp.peerID + "][ICE-Connection] " + s.String())
-	})
-
-	pc.OnSignalingStateChange(func(s webrtc.SignalingState) {
-		logger.Debug("[" + rp.peerID + "][Signaling] " + s.String())
+	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		rp.mu.RLock()
+		currentPC := rp.pc
+		rp.mu.RUnlock()
+		if currentPC != pc {
+			return
+		}
+		logger.Debug("[" + rp.peerID + "] PeerConn: " + s.String())
+		if s == webrtc.PeerConnectionStateFailed {
+			go rp.handleReconnect()
+		}
 	})
 
 	return pc, nil
 }
 
 func (rp *RemotePeer) startOffer() error {
+	if pc := rp.teardown(); pc != nil {
+		pc.Close()
+	}
 	pc, err := rp.newPeerConnection()
 	if err != nil {
 		return err
 	}
-
 	rp.mu.Lock()
 	rp.pc = pc
 	rp.mu.Unlock()
 
-	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
-		if c == nil {
-			return
+	for _, label := range []string{"tunnel", "chat", "signal"} {
+		dc, err := pc.CreateDataChannel(label, nil)
+		if err != nil {
+			return err
 		}
-		data, _ := json.Marshal(c.ToJSON())
-		rp.manager.sendSignal(SignalMessage{
-			Type:       "candidate",
-			Data:       string(data),
-			SenderId:   rp.manager.selfID,
-			ReceiverId: rp.peerID,
-			RoomId:     rp.manager.roomID,
-		})
-	})
-
-	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		rp.mu.RLock()
-		currentPC := rp.pc
-		rp.mu.RUnlock()
-		if currentPC != pc {
-			return
+		switch label {
+		case "tunnel":
+			rp.initTunnelDC(dc)
+		case "chat":
+			rp.initChatDC(dc)
+		case "signal":
+			rp.initSignalDC(dc)
 		}
-
-		logger.Debug("[" + rp.peerID + "] PeerConnection state: " + s.String())
-
-		switch s {
-		case webrtc.PeerConnectionStateFailed:
-			go rp.handleReconnect()
-		case webrtc.PeerConnectionStateDisconnected:
-			go func() {
-				time.Sleep(3 * time.Second)
-				rp.mu.RLock()
-				pc := rp.pc
-				rp.mu.RUnlock()
-				if pc != nil && pc.ConnectionState() == webrtc.PeerConnectionStateDisconnected {
-					logger.Debug("[" + rp.peerID + "] Still disconnected after timeout, reconnecting...")
-					rp.handleReconnect()
-				}
-			}()
-		case webrtc.PeerConnectionStateClosed:
-			logger.Debug("[" + rp.peerID + "] PeerConnection closed")
-		}
-	})
-
-	dcTunnel, err := pc.CreateDataChannel("tunnel", nil)
-	if err != nil {
-		return err
 	}
-	rp.initTunnelDC(dcTunnel)
 
-	dcChat, err := pc.CreateDataChannel("chat", nil)
-	if err != nil {
-		return err
-	}
-	rp.initChatDC(dcChat)
-
-	dcSignal, err := pc.CreateDataChannel("signal", nil)
-	if err != nil {
-		return err
-	}
-	rp.initSignalDC(dcSignal)
-
-	offer, err := pc.CreateOffer(nil)
-	if err != nil {
-		return err
-	}
+	offer, _ := pc.CreateOffer(nil)
 	if err := pc.SetLocalDescription(offer); err != nil {
 		return err
 	}
-
 	data, _ := json.Marshal(offer)
-	rp.manager.sendSignal(SignalMessage{
+	rp.manager.sendSignal(signal.Message{
 		Type:       "offer",
 		Data:       string(data),
 		SenderId:   rp.manager.selfID,
 		ReceiverId: rp.peerID,
 		RoomId:     rp.manager.roomID,
-		Role:       rp.manager.selfRole,
+		Role:       string(rp.manager.selfRole),
 	})
-
 	return nil
 }
 
 func (rp *RemotePeer) handleOffer(data string) error {
+	if pc := rp.teardown(); pc != nil {
+		pc.Close()
+	}
 	pc, err := rp.newPeerConnection()
 	if err != nil {
 		return err
 	}
-
 	rp.mu.Lock()
 	rp.pc = pc
 	rp.mu.Unlock()
 
-	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
-		if c == nil {
-			return
-		}
-		data, _ := json.Marshal(c.ToJSON())
-		rp.manager.sendSignal(SignalMessage{
-			Type:       "candidate",
-			Data:       string(data),
-			SenderId:   rp.manager.selfID,
-			ReceiverId: rp.peerID,
-			RoomId:     rp.manager.roomID,
-		})
-	})
-
-	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		rp.mu.RLock()
-		currentPC := rp.pc
-		rp.mu.RUnlock()
-		if currentPC != pc {
-			return
-		}
-
-		logger.Debug("[" + rp.peerID + "] PeerConnection state: " + s.String())
-
-		switch s {
-		case webrtc.PeerConnectionStateFailed:
-			go rp.handleReconnect()
-		case webrtc.PeerConnectionStateDisconnected:
-			go func() {
-				time.Sleep(3 * time.Second)
-				rp.mu.RLock()
-				pc := rp.pc
-				rp.mu.RUnlock()
-				if pc != nil && pc.ConnectionState() == webrtc.PeerConnectionStateDisconnected {
-					logger.Debug("[" + rp.peerID + "] Still disconnected after timeout, reconnecting...")
-					rp.handleReconnect()
-				}
-			}()
-		case webrtc.PeerConnectionStateClosed:
-			logger.Debug("[" + rp.peerID + "] PeerConnection closed")
-		}
-	})
-
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		logger.Debug("[" + rp.peerID + "] Received DataChannel: " + dc.Label())
 		switch dc.Label() {
 		case "chat":
 			rp.initChatDC(dc)
@@ -275,86 +162,57 @@ func (rp *RemotePeer) handleOffer(data string) error {
 	if err := pc.SetRemoteDescription(offer); err != nil {
 		return err
 	}
-
-	answer, err := pc.CreateAnswer(nil)
-	if err != nil {
-		return err
-	}
+	answer, _ := pc.CreateAnswer(nil)
 	if err := pc.SetLocalDescription(answer); err != nil {
 		return err
 	}
 
 	ansData, _ := json.Marshal(answer)
-	rp.manager.sendSignal(SignalMessage{
+	rp.manager.sendSignal(signal.Message{
 		Type:       "answer",
 		Data:       string(ansData),
 		SenderId:   rp.manager.selfID,
 		ReceiverId: rp.peerID,
 		RoomId:     rp.manager.roomID,
-		Role:       rp.manager.selfRole,
+		Role:       string(rp.manager.selfRole),
 	})
-
 	return nil
 }
 
 func (rp *RemotePeer) handleAnswer(data string) error {
-	var answer webrtc.SessionDescription
-	if err := json.Unmarshal([]byte(data), &answer); err != nil {
-		logger.Debug("[" + rp.peerID + "] unmarshal answer error: " + err.Error())
-		return err
-	}
-
 	rp.mu.RLock()
 	pc := rp.pc
 	rp.mu.RUnlock()
-
 	if pc == nil {
-		logger.Debug("[" + rp.peerID + "] no peer connection for answer")
 		return nil
 	}
-
-	if err := pc.SetRemoteDescription(answer); err != nil {
-		logger.Debug("[" + rp.peerID + "] SetRemoteDescription(answer) error: " + err.Error())
+	var answer webrtc.SessionDescription
+	if err := json.Unmarshal([]byte(data), &answer); err != nil {
 		return err
 	}
-	return nil
+	return pc.SetRemoteDescription(answer)
 }
 
 func (rp *RemotePeer) handleCandidate(data string) error {
-	logger.Debug("[" + rp.peerID + "][Remote-Candidate] " + data)
-	var cand webrtc.ICECandidateInit
-	if err := json.Unmarshal([]byte(data), &cand); err != nil {
-		logger.Debug("[" + rp.peerID + "] unmarshal candidate error: " + err.Error())
-		return err
-	}
-
 	rp.mu.RLock()
 	pc := rp.pc
 	rp.mu.RUnlock()
-
 	if pc == nil {
-		logger.Debug("[" + rp.peerID + "] no peer connection for candidate")
 		return nil
 	}
-
-	if err := pc.AddICECandidate(cand); err != nil {
-		logger.Debug("[" + rp.peerID + "] AddICECandidate error: " + err.Error())
+	var cand webrtc.ICECandidateInit
+	if err := json.Unmarshal([]byte(data), &cand); err != nil {
 		return err
 	}
-	return nil
+	return pc.AddICECandidate(cand)
 }
 
 func (rp *RemotePeer) initChatDC(dc *webrtc.DataChannel) {
 	rp.mu.Lock()
 	rp.dcChat = dc
 	rp.mu.Unlock()
-
-	dc.OnOpen(func() { logger.Debug("[" + rp.peerID + "] DataChannel chat open") })
-	dc.OnClose(func() { logger.Debug("[" + rp.peerID + "] DataChannel chat closed") })
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		for _, cb := range rp.chatCallbacks {
-			cb(string(msg.Data))
-		}
+		rp.manager.notifyChat(rp.peerID, string(msg.Data))
 	})
 }
 
@@ -362,23 +220,10 @@ func (rp *RemotePeer) initTunnelDC(dc *webrtc.DataChannel) {
 	rp.mu.Lock()
 	rp.dcTunnel = dc
 	rp.mu.Unlock()
-
-	dc.OnOpen(func() {
-		logger.Debug("[" + rp.peerID + "] DataChannel tunnel open")
-		for _, cb := range rp.tunnelOpenCallbacks {
-			cb()
-		}
-	})
-	dc.OnClose(func() {
-		logger.Debug("[" + rp.peerID + "] DataChannel tunnel closed")
-		for _, cb := range rp.tunnelCloseCallbacks {
-			cb()
-		}
-	})
+	dc.OnOpen(func() { rp.manager.notifyTunnelOpen(rp.peerID) })
+	dc.OnClose(func() { rp.manager.notifyTunnelClose(rp.peerID) })
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		for _, cb := range rp.tunnelMessageCallbacks {
-			cb(msg)
-		}
+		rp.manager.notifyTunnelMsg(rp.peerID, msg.Data)
 	})
 }
 
@@ -386,17 +231,21 @@ func (rp *RemotePeer) initSignalDC(dc *webrtc.DataChannel) {
 	rp.mu.Lock()
 	rp.dcSignal = dc
 	rp.mu.Unlock()
-
 	dc.OnOpen(func() {
-		logger.Debug("[" + rp.peerID + "] DataChannel signal open")
 		rp.manager.broadcastPeerList(rp.peerID)
-	})
-	dc.OnClose(func() {
-		logger.Debug("[" + rp.peerID + "] DataChannel signal closed")
+		rp.manager.notifyPeerConnected(rp.peerID)
 	})
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		rp.manager.handleRelayedSignal(msg.Data)
+		rp.manager.handleRawRelay(msg.Data)
 	})
+}
+
+func (rp *RemotePeer) teardown() *webrtc.PeerConnection {
+	rp.mu.Lock()
+	defer rp.mu.Unlock()
+	pc := rp.pc
+	rp.pc, rp.dcTunnel, rp.dcChat, rp.dcSignal = nil, nil, nil, nil
+	return pc
 }
 
 func (rp *RemotePeer) handleReconnect() {
@@ -406,53 +255,23 @@ func (rp *RemotePeer) handleReconnect() {
 		return
 	}
 	rp.reconnecting = true
-	pc := rp.pc
-	rp.pc = nil
-	rp.dcTunnel = nil
-	rp.dcChat = nil
-	rp.dcSignal = nil
 	rp.mu.Unlock()
+	defer func() { rp.mu.Lock(); rp.reconnecting = false; rp.mu.Unlock() }()
 
-	defer func() {
-		rp.mu.Lock()
-		rp.reconnecting = false
-		rp.mu.Unlock()
-	}()
-
-	if pc != nil {
+	if pc := rp.teardown(); pc != nil {
 		pc.Close()
 	}
-
 	time.Sleep(1 * time.Second)
-
-	logger.Debug("[" + rp.peerID + "] Re-requesting peer connection...")
 	rp.manager.requestPeerConnection(rp.peerID)
 }
 
 func (rp *RemotePeer) Close() {
-	rp.mu.Lock()
-	pc := rp.pc
-	rp.pc = nil
-	rp.dcTunnel = nil
-	rp.dcChat = nil
-	rp.dcSignal = nil
-	rp.mu.Unlock()
-
-	if pc != nil {
+	if pc := rp.teardown(); pc != nil {
 		pc.Close()
 	}
 }
 
-func (rp *RemotePeer) OnChatMessage(fn func(string)) {
-	rp.chatCallbacks = append(rp.chatCallbacks, fn)
-}
-
-func (rp *RemotePeer) OnTunnelMessage(fn func(webrtc.DataChannelMessage)) {
-	rp.tunnelMessageCallbacks = append(rp.tunnelMessageCallbacks, fn)
-}
-
 func (rp *RemotePeer) OnTunnelOpen(fn func()) {
-	rp.tunnelOpenCallbacks = append(rp.tunnelOpenCallbacks, fn)
 	rp.mu.RLock()
 	dc := rp.dcTunnel
 	rp.mu.RUnlock()
@@ -461,15 +280,10 @@ func (rp *RemotePeer) OnTunnelOpen(fn func()) {
 	}
 }
 
-func (rp *RemotePeer) OnTunnelClose(fn func()) {
-	rp.tunnelCloseCallbacks = append(rp.tunnelCloseCallbacks, fn)
-}
-
 func (rp *RemotePeer) SendChat(msg string) error {
 	rp.mu.RLock()
 	dc := rp.dcChat
 	rp.mu.RUnlock()
-
 	if dc == nil {
 		return nil
 	}
@@ -480,9 +294,17 @@ func (rp *RemotePeer) sendSignalRelay(data []byte) error {
 	rp.mu.RLock()
 	dc := rp.dcSignal
 	rp.mu.RUnlock()
-
 	if dc == nil || dc.ReadyState() != webrtc.DataChannelStateOpen {
 		return errDataChannelNotReady
 	}
 	return dc.Send(data)
+}
+
+func nextMsgID(selfID string) string {
+	seq := atomic.AddUint64(&msgSeq, 1)
+	prefix := selfID
+	if len(prefix) > 4 {
+		prefix = prefix[:4]
+	}
+	return fmt.Sprintf("%s_%s_%d", time.Now().Format("150405.000"), prefix, seq)
 }
