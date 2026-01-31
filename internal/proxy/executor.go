@@ -11,11 +11,12 @@ import (
 	"github.com/pion/webrtc/v3"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/stdio"
 )
 
 type Executor struct {
 	manager    *rtc.RTCManager
-	command    string
+	command    []string
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
 	mu         sync.Mutex
@@ -23,7 +24,7 @@ type Executor struct {
 	done       chan struct{}
 }
 
-func NewExecutor(manager *rtc.RTCManager, command string) *Executor {
+func NewExecutor(manager *rtc.RTCManager, command []string) *Executor {
 	return &Executor{
 		manager: manager,
 		command: command,
@@ -41,8 +42,11 @@ func (e *Executor) Run() error {
 		}
 
 		if e.stdin != nil {
-			if _, err := e.stdin.Write(data); err != nil {
-				logger.Debug("Failed to write to child stdin: " + err.Error())
+			streamType, payload := stdio.Unwrap(data)
+			if streamType == stdio.StreamStdin {
+				if _, err := e.stdin.Write(payload); err != nil {
+					logger.Debug("Failed to write to child stdin: " + err.Error())
+				}
 			}
 		}
 	})
@@ -80,13 +84,11 @@ func (e *Executor) Run() error {
 }
 
 func (e *Executor) startCommand() error {
-	var cmd *exec.Cmd
-
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/C", e.command)
-	} else {
-		cmd = exec.Command("sh", "-c", e.command)
+	if len(e.command) == 0 {
+		return nil
 	}
+
+	cmd := exec.Command(e.command[0], e.command[1:]...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -99,16 +101,20 @@ func (e *Executor) startCommand() error {
 		return err
 	}
 
-	cmd.Stderr = os.Stderr
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 
 	e.cmd = cmd
-	logger.Debug("Proxy command started: " + e.command)
+	logger.Debug("Proxy command started")
 
-	go e.forwardStdout(stdout)
+	go e.forwardStream(stdout, stdio.StreamStdout)
+	go e.forwardStream(stderr, stdio.StreamStderr)
 
 	go func() {
 		err := cmd.Wait()
@@ -127,14 +133,13 @@ func (e *Executor) startCommand() error {
 	return nil
 }
 
-func (e *Executor) forwardStdout(stdout io.ReadCloser) {
-	buf := make([]byte, 64*1024)
+func (e *Executor) forwardStream(reader io.ReadCloser, streamType stdio.StreamType) {
+	buf := make([]byte, 32*1024)
 
 	for {
-		n, err := stdout.Read(buf)
+		n, err := reader.Read(buf)
 		if n > 0 {
-			data := make([]byte, n)
-			copy(data, buf[:n])
+			data := stdio.Wrap(streamType, buf[:n])
 
 			e.mu.Lock()
 			peer := e.activePeer
@@ -144,7 +149,7 @@ func (e *Executor) forwardStdout(stdout io.ReadCloser) {
 				dc := peer.DataChannelTunnel()
 				if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
 					if err := dc.Send(data); err != nil {
-						logger.Debug("Failed to send stdout data: " + err.Error())
+						logger.Debug("Failed to send stream data: " + err.Error())
 					}
 				}
 			}
@@ -152,7 +157,7 @@ func (e *Executor) forwardStdout(stdout io.ReadCloser) {
 
 		if err != nil {
 			if err != io.EOF {
-				logger.Debug("stdout read error: " + err.Error())
+				logger.Debug("stream read error: " + err.Error())
 			}
 			break
 		}

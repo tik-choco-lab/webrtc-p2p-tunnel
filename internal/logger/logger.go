@@ -16,16 +16,20 @@ var (
 )
 
 type Options struct {
-	Debug     bool
+	Verbosity int
 	UseStderr bool
 }
 
 func Init() {
-	InitWithOptions(Options{})
+	InitWithOptions(Options{Verbosity: 1})
 }
 
 func InitWithDebug(debug bool) {
-	InitWithOptions(Options{Debug: debug})
+	v := 1
+	if debug {
+		v = 2
+	}
+	InitWithOptions(Options{Verbosity: v})
 }
 
 func InitWithOptions(opts Options) {
@@ -38,9 +42,12 @@ func InitWithOptions(opts Options) {
 			Compress:   true,
 		}
 
-		logLevel := zap.InfoLevel
-		if opts.Debug {
+		// Verbosity: 0=Error, 1=Info, 2=Debug
+		logLevel := zap.ErrorLevel
+		if opts.Verbosity >= 2 {
 			logLevel = zap.DebugLevel
+		} else if opts.Verbosity == 1 {
+			logLevel = zap.InfoLevel
 		}
 
 		encoderConfig := zap.NewProductionEncoderConfig()
@@ -56,33 +63,28 @@ func InitWithOptions(opts Options) {
 			logLevel,
 		)
 
-		if opts.Debug {
-			consoleEncoderConfig := zap.NewDevelopmentEncoderConfig()
-			consoleEncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-			consoleEncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05")
+		consoleEncoderConfig := zap.NewDevelopmentEncoderConfig()
+		consoleEncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+		consoleEncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05")
 
-			consoleOutput := os.Stdout
-			if opts.UseStderr {
-				consoleOutput = os.Stderr
-			}
+		consoleOutput := os.Stdout
+		if opts.UseStderr {
+			consoleOutput = os.Stderr
+		}
 
+		if opts.Verbosity >= 2 {
 			consoleCore := zapcore.NewCore(
 				zapcore.NewConsoleEncoder(consoleEncoderConfig),
 				zapcore.AddSync(consoleOutput),
 				logLevel,
 			)
-
 			log = zap.New(zapcore.NewTee(fileCore, consoleCore))
 		} else if opts.UseStderr {
-			consoleEncoderConfig := zap.NewDevelopmentEncoderConfig()
-			consoleEncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("15:04:05")
-
 			consoleCore := zapcore.NewCore(
 				zapcore.NewConsoleEncoder(consoleEncoderConfig),
 				zapcore.AddSync(os.Stderr),
 				logLevel,
 			)
-
 			log = zap.New(zapcore.NewTee(fileCore, consoleCore))
 		} else {
 			log = zap.New(fileCore)

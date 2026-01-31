@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 
 const (
 	tunnelReadyTimeout = 30 * time.Second
+	tcpBufferSize      = 4096
+	retryInterval      = 50 * time.Millisecond
 )
 
 type manager struct {
@@ -117,19 +120,19 @@ func (m *manager) waitForTunnelReady(timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		serverPeers := m.rtcManager.GetServerPeers()
+		if len(serverPeers) == 0 {
+			logger.Debug("No server peers found in peer list")
+		}
 		for _, peer := range serverPeers {
 			dc := peer.DataChannelTunnel()
+			state := "nil"
+			if dc != nil {
+				state = dc.ReadyState().String()
+			}
+			logger.Debug(fmt.Sprintf("Checking peer %s: Role=%s, DCState=%s", peer.PeerID(), peer.Role(), state))
+
 			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
 				logger.Debug("Selected server peer: " + peer.PeerID())
-				return peer.PeerID(), nil
-			}
-		}
-
-		peers := m.rtcManager.GetAllPeers()
-		for _, peer := range peers {
-			dc := peer.DataChannelTunnel()
-			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-				logger.Debug("Selected peer (no server available): " + peer.PeerID())
 				return peer.PeerID(), nil
 			}
 		}
@@ -137,7 +140,7 @@ func (m *manager) waitForTunnelReady(timeout time.Duration) (string, error) {
 		if time.Now().After(deadline) {
 			return "", errors.New("tunnel data channel not open")
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(retryInterval)
 	}
 }
 
@@ -146,7 +149,7 @@ func (m *manager) forwardTCPToDC(connID string) {
 	if !ok {
 		return
 	}
-	buf := make([]byte, 4096)
+	buf := make([]byte, tcpBufferSize)
 	for {
 		n, err := tc.conn.Read(buf)
 		if n > 0 {
@@ -162,7 +165,7 @@ func (m *manager) forwardTCPToDC(connID string) {
 			}
 		}
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "use of closed network connection") {
 				logger.Error("tcp read error: " + err.Error())
 			}
 			m.closeConn(connID, true)
@@ -172,9 +175,12 @@ func (m *manager) forwardTCPToDC(connID string) {
 }
 
 func (m *manager) onTunnelMessage(peerID string, data []byte) {
+	if len(data) == 0 || data[0] != '{' {
+		return
+	}
 	var tm rtc.TunnelMessage
 	if err := json.Unmarshal(data, &tm); err != nil {
-		logger.Error("failed to decode tunnel message: " + err.Error())
+		logger.Debug("failed to decode tunnel message: " + err.Error())
 		return
 	}
 	switch tm.Type {

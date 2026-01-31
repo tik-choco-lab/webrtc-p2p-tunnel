@@ -7,4 +7,6 @@ type Message struct {
 	ReceiverId string `json:"ReceiverId,omitempty"`
 	RoomId     string `json:"RoomId,omitempty"`
 	Role       string `json:"Role,omitempty"`
+	MsgID      string `json:"MsgID,omitempty"`
+	Hops       int    `json:"Hops,omitempty"`
 }
