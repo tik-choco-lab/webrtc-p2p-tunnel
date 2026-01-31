@@ -41,8 +41,6 @@ func (b *Bridge) Run() error {
 			os.Stdout.Write(payload)
 		case StreamStderr:
 			os.Stderr.Write(payload)
-		default:
-			os.Stdout.Write(payload)
 		}
 	})
 

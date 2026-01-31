@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,7 +165,7 @@ func (m *manager) forwardTCPToDC(connID string) {
 			}
 		}
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "use of closed network connection") {
 				logger.Error("tcp read error: " + err.Error())
 			}
 			m.closeConn(connID, true)
@@ -174,9 +175,12 @@ func (m *manager) forwardTCPToDC(connID string) {
 }
 
 func (m *manager) onTunnelMessage(peerID string, data []byte) {
+	if len(data) == 0 || data[0] != '{' {
+		return
+	}
 	var tm rtc.TunnelMessage
 	if err := json.Unmarshal(data, &tm); err != nil {
-		logger.Error("failed to decode tunnel message: " + err.Error())
+		logger.Debug("failed to decode tunnel message: " + err.Error())
 		return
 	}
 	switch tm.Type {
