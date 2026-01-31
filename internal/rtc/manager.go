@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/pion/webrtc/v3"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
 )
 
@@ -92,19 +93,37 @@ func (m *RTCManager) processSignal(msg signal.Message) {
 		peer.setRole(PeerRole(msg.Role))
 	}
 
+	m.mu.RLock()
+	pc := peer.pc
+	m.mu.RUnlock()
+
+	signalingStable := pc != nil && pc.SignalingState() == webrtc.SignalingStateStable
+	connActive := pc != nil && (pc.ConnectionState() == webrtc.PeerConnectionStateConnected ||
+		pc.ConnectionState() == webrtc.PeerConnectionStateConnecting)
+
 	switch msg.Type {
 	case "Request":
+		if signalingStable || connActive {
+			return
+		}
 		if m.selfID < msg.SenderId {
 			peer.startOffer()
 		}
+
 	case "offer":
-		m.mu.RLock()
-		pc := peer.pc
-		m.mu.RUnlock()
-		if m.selfID < msg.SenderId && pc != nil && pc.SignalingState() != webrtc.SignalingStateStable {
+		if signalingStable && connActive {
 			return
 		}
+
+		if !signalingStable && pc != nil {
+			if m.selfID < msg.SenderId {
+				logger.Debug("[" + msg.SenderId + "] Glare: I am winner (Smaller ID), ignoring incoming offer")
+				return
+			}
+			logger.Debug("[" + msg.SenderId + "] Glare: I am polite (Larger ID), yielding to their offer")
+		}
 		peer.handleOffer(msg.Data)
+
 	case "answer":
 		peer.handleAnswer(msg.Data)
 	case "candidate":
@@ -147,7 +166,9 @@ func (m *RTCManager) sendSignal(msg signal.Message) {
 		msg.Hops = 5
 	}
 	m.relaySignal(msg)
-	m.sig.Send(msg)
+	if msg.SenderId == m.selfID {
+		m.sig.Send(msg)
+	}
 }
 
 func (m *RTCManager) broadcastPeerList(targetPeerID string) {
@@ -200,7 +221,6 @@ func (m *RTCManager) handleRawRelay(data []byte) {
 	}
 }
 
-// Notifications from RemotePeer
 func (m *RTCManager) notifyChat(pID, msg string) {
 	for _, h := range m.chatHandlers {
 		h(pID, msg)
@@ -242,7 +262,6 @@ func (m *RTCManager) notifyPeerConnected(pID string) {
 	}
 }
 
-// Public Handlers
 func (m *RTCManager) OnChatMessage(h func(string, string)) {
 	m.chatHandlers = append(m.chatHandlers, h)
 }

@@ -264,6 +264,9 @@ func (rp *RemotePeer) initStdioDC(dc *webrtc.DataChannel) {
 func (rp *RemotePeer) teardown() *webrtc.PeerConnection {
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
+	if rp.pc != nil {
+		logger.Debug("[" + rp.peerID + "] Tearing down connection")
+	}
 	pc := rp.pc
 	rp.pc, rp.dcTunnel, rp.dcChat, rp.dcSignal, rp.dcStdio = nil, nil, nil, nil, nil
 	return pc
