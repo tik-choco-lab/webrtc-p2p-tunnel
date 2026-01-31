@@ -1,7 +1,6 @@
 package stdio
 
 import (
-	"bufio"
 	"io"
 	"os"
 	"sync"
@@ -36,7 +35,15 @@ func (b *Bridge) Run() error {
 		}
 		b.mu.Unlock()
 
-		os.Stdout.Write(data)
+		streamType, payload := Unwrap(data)
+		switch streamType {
+		case StreamStdout:
+			os.Stdout.Write(payload)
+		case StreamStderr:
+			os.Stderr.Write(payload)
+		default:
+			os.Stdout.Write(payload)
+		}
 	})
 
 	b.manager.OnTunnelOpen(func(peerID string) {
@@ -80,14 +87,12 @@ func (b *Bridge) Run() error {
 }
 
 func (b *Bridge) readStdin() {
-	reader := bufio.NewReader(os.Stdin)
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, 32*1024)
 
 	for {
-		n, err := reader.Read(buf)
+		n, err := os.Stdin.Read(buf)
 		if n > 0 {
-			data := make([]byte, n)
-			copy(data, buf[:n])
+			data := Wrap(StreamStdin, buf[:n])
 
 			b.mu.Lock()
 			if b.connected && b.activePeer != nil {
