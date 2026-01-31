@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -30,21 +31,38 @@ func generateRoomID() string {
 }
 
 var serveCmd = &cobra.Command{
-	Use:   "serve [room-id] [flags] -- [command...]",
+	Use:   "serve [room-id] [forward-target] [flags] -- [command...]",
 	Short: "(Server side) Publish a command or port to a room",
+	Example: `  # Auto-generate room and serve local port 80
+  p2p serve :80
+
+  # Specific room and forward target
+  p2p serve my-room tcp://127.0.0.1:80
+
+  # Execute command in specific room
+  p2p serve my-room -- python server.py`,
 	Run: func(cmd *cobra.Command, args []string) {
 		dashIdx := cmd.ArgsLenAtDash()
 		var currentRoomID string
 		var remoteCommand []string
+		var dashArgs []string
 
 		if dashIdx >= 0 {
-			if dashIdx > 0 {
-				currentRoomID = args[0]
-			}
+			dashArgs = args[:dashIdx]
 			remoteCommand = args[dashIdx:]
 		} else {
-			if len(args) > 0 {
-				currentRoomID = args[0]
+			dashArgs = args
+		}
+
+		if len(dashArgs) > 0 {
+			arg := dashArgs[0]
+			if (strings.Contains(arg, ":") || strings.HasPrefix(arg, "tcp://") || strings.HasPrefix(arg, "udp://")) && len(dashArgs) == 1 {
+				serveForwards = append(serveForwards, arg)
+			} else {
+				currentRoomID = arg
+				if len(dashArgs) > 1 {
+					serveForwards = append(serveForwards, dashArgs[1])
+				}
 			}
 		}
 

@@ -21,11 +21,19 @@ var (
 )
 
 var connectCmd = &cobra.Command{
-	Use:   "connect <room-id>",
+	Use:   "connect <room-id> [forward-target]",
 	Short: "(Client side) Join a room and bridge to your stdio",
-	Args:  cobra.ExactArgs(1),
+	Example: `  # Standard I/O bridge only
+  p2p connect my-room
+
+  # Standard I/O + Port forwarding
+  p2p connect my-room tcp://:8080`,
+	Args: cobra.RangeArgs(1, 2),
 	Run: func(cmd *cobra.Command, args []string) {
 		currentRoomID := args[0]
+		if len(args) > 1 {
+			connectForwards = append(connectForwards, args[1])
+		}
 		url := viper.GetString("url")
 
 		selfID := uuid.New().String()
