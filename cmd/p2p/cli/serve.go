@@ -31,8 +31,7 @@ func generateRoomID() string {
 
 var serveCmd = &cobra.Command{
 	Use:   "serve [room-id] [flags] -- [command...]",
-	Short: "(Server side) Run a command and publish it to a room",
-	Long:  `Starts the tunnel in server mode. If a room-id is provided, it joins that room; otherwise, it generates a random one. If a command is specified after '--', it will be executed when a peer connects, and its stdio will be bridged.`,
+	Short: "(Server side) Publish a command or port to a room",
 	Run: func(cmd *cobra.Command, args []string) {
 		dashIdx := cmd.ArgsLenAtDash()
 		var currentRoomID string

@@ -122,7 +122,7 @@ func init() {
 }
 
 func initConnect() {
-	connectCmd.Flags().StringSliceVarP(&connectForwards, "forward", "F", []string{}, "Forward address (e.g. tcp://:8080)")
+	connectCmd.Flags().StringSliceVarP(&connectForwards, "forward", "F", []string{}, "Local listen address to forward (e.g. tcp://:8080 or udp://:9000)")
 
 	connectCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
 
@@ -132,7 +132,7 @@ func initConnect() {
 }
 
 func initServe() {
-	serveCmd.Flags().StringSliceVarP(&serveForwards, "forward", "F", []string{}, "Forward target (e.g. tcp://127.0.0.1:80 or udp://127.0.0.1:9000)")
+	serveCmd.Flags().StringSliceVarP(&serveForwards, "forward", "F", []string{}, "Remote target address to dial (e.g. tcp://127.0.0.1:80 or udp://127.0.0.1:9000)")
 
 	serveCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
 
