@@ -15,6 +15,12 @@ import (
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/proxy"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
 	signalclient "github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/tcp"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/udp"
+)
+
+var (
+	serveForwards []string
 )
 
 func generateRoomID() string {
@@ -48,6 +54,15 @@ var serveCmd = &cobra.Command{
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+		for _, f := range serveForwards {
+			proto, addr, _ := ParseForward(f)
+			if proto == "tcp" {
+				go tcp.ListenAndServe(manager, -1, addr)
+			} else {
+				go udp.ListenAndServe(manager, -1, addr)
+			}
+		}
+
 		if len(args) > 0 {
 			logger.Debug("Running in proxy-cmd mode")
 			executor := proxy.NewExecutor(manager, args)
@@ -61,8 +76,11 @@ var serveCmd = &cobra.Command{
 			if err := executor.Run(); err != nil {
 				logger.Error("proxy executor error: " + err.Error())
 			}
+		} else if len(serveForwards) > 0 {
+			logger.Debug("Running in port-forwarding mode")
+			<-sigChan
 		} else {
-			logger.Error("No command specified. Usage: tunnel serve -- <command>")
+			logger.Error("No command or forwards specified. Usage: tunnel serve -- <command> OR tunnel serve -F <forward>")
 		}
 
 		manager.Close()
@@ -70,5 +88,6 @@ var serveCmd = &cobra.Command{
 }
 
 func init() {
+	serveCmd.Flags().StringSliceVarP(&serveForwards, "forward", "F", []string{}, "Forward target (e.g. tcp://127.0.0.1:80 or udp://127.0.0.1:9000)")
 	RootCmd.AddCommand(serveCmd)
 }

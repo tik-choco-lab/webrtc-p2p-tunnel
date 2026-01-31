@@ -3,9 +3,11 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -14,24 +16,14 @@ import (
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
 	signalclient "github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
-	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/tcp"
-	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/udp"
 )
 
 var (
 	cfgFile string
-	verbose bool
-	debug   bool
+	verbose int
 
 	signalingURL string
 	roomID       string
-
-	listenPort int
-	remoteAddr string
-	isServer   bool
-
-	udpListenPort int
-	udpRemoteAddr string
 )
 
 var RootCmd = &cobra.Command{
@@ -41,7 +33,7 @@ var RootCmd = &cobra.Command{
 Supports TCP forwarding, standard I/O bridging, and remote command execution.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		logger.InitWithOptions(logger.Options{
-			Debug:     debug || verbose,
+			Verbosity: verbose,
 			UseStderr: true,
 		})
 	},
@@ -61,44 +53,17 @@ Supports TCP forwarding, standard I/O bridging, and remote command execution.`,
 			return
 		}
 
-		manager := rtc.NewRTCManager(sig, selfID, currentRoomID, isServer)
+		manager := rtc.NewRTCManager(sig, selfID, currentRoomID, false)
 
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-		chatOnlyMode := listenPort == -1 && remoteAddr == "" && udpListenPort == -1 && udpRemoteAddr == ""
-
-		if chatOnlyMode {
-			println("=== Chat Mode ===")
-			println("Type a message and press Enter to send.")
-		} else {
-			if listenPort != -1 || remoteAddr != "" {
-				logger.Debug("TCP listenPort: " + strconv.Itoa(listenPort))
-				logger.Debug("TCP remoteAddr: " + remoteAddr)
-			}
-			if udpListenPort != -1 || udpRemoteAddr != "" {
-				logger.Debug("UDP listenPort: " + strconv.Itoa(udpListenPort))
-				logger.Debug("UDP remoteAddr: " + udpRemoteAddr)
-			}
-			logger.Debug("isServer: " + strconv.FormatBool(isServer))
-		}
+		println("=== Chat Mode ===")
+		println("Type a message and press Enter to send.")
 
 		manager.OnChatMessage(func(peerID string, msg string) {
 			println("[" + peerID[:8] + "] " + msg)
 		})
-
-		if !chatOnlyMode {
-			manager.OnTunnelOpen(func(peerID string) {
-				logger.Debug("Tunnel opened with peer: " + peerID)
-			})
-
-			if listenPort != -1 || remoteAddr != "" {
-				go tcp.ListenAndServe(manager, listenPort, remoteAddr)
-			}
-			if udpListenPort != -1 || udpRemoteAddr != "" {
-				go udp.ListenAndServe(manager, udpListenPort, udpRemoteAddr)
-			}
-		}
 
 		go func() {
 			scanner := bufio.NewScanner(os.Stdin)
@@ -112,6 +77,31 @@ Supports TCP forwarding, standard I/O bridging, and remote command execution.`,
 	},
 }
 
+func ParseForward(f string) (string, string, int) {
+	proto := "tcp"
+	addr := f
+	if strings.HasPrefix(f, "tcp://") {
+		proto = "tcp"
+		addr = f[6:]
+	} else if strings.HasPrefix(f, "udp://") {
+		proto = "udp"
+		addr = f[6:]
+	}
+
+	port := -1
+	if p, err := strconv.Atoi(addr); err == nil {
+		port = p
+	} else {
+		_, portStr, err := net.SplitHostPort(addr)
+		if err == nil {
+			if p, err := strconv.Atoi(portStr); err == nil {
+				port = p
+			}
+		}
+	}
+	return proto, addr, port
+}
+
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -123,18 +113,10 @@ func init() {
 
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.tunnel.yaml)")
 
-	RootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
-	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "debug output")
+	RootCmd.PersistentFlags().CountVarP(&verbose, "verbose", "v", "verbose output (-v for info, -vv for debug)")
 
 	RootCmd.PersistentFlags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
 	RootCmd.PersistentFlags().StringVar(&roomID, "room", "", "Room ID (auto-generated if empty)")
-
-	RootCmd.Flags().IntVarP(&listenPort, "listen", "l", -1, "Local TCP port to listen on")
-	RootCmd.Flags().StringVarP(&remoteAddr, "remote", "r", "", "Remote TCP address to forward to")
-	RootCmd.Flags().BoolVarP(&isServer, "server", "s", false, "Run as server mode (data receiver)")
-
-	RootCmd.Flags().IntVar(&udpListenPort, "udp-listen", -1, "Local UDP port to listen on")
-	RootCmd.Flags().StringVar(&udpRemoteAddr, "udp-remote", "", "Remote UDP address to forward to")
 
 	viper.BindPFlag("url", RootCmd.PersistentFlags().Lookup("url"))
 	viper.BindPFlag("room", RootCmd.PersistentFlags().Lookup("room"))
@@ -154,7 +136,7 @@ func initConfig() {
 	viper.SetEnvPrefix("TUNNEL")
 	viper.AutomaticEnv()
 
-	if err := viper.ReadInConfig(); err == nil && (debug || verbose) {
+	if err := viper.ReadInConfig(); err == nil && verbose > 0 {
 		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
 	}
 }

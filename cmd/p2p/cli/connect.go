@@ -12,6 +12,12 @@ import (
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
 	signalclient "github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/stdio"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/tcp"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/udp"
+)
+
+var (
+	connectForwards []string
 )
 
 var connectCmd = &cobra.Command{
@@ -52,6 +58,15 @@ var connectCmd = &cobra.Command{
 			os.Exit(0)
 		}()
 
+		for _, f := range connectForwards {
+			proto, _, port := ParseForward(f)
+			if proto == "tcp" {
+				go tcp.ListenAndServe(manager, port, "")
+			} else {
+				go udp.ListenAndServe(manager, port, "")
+			}
+		}
+
 		if err := bridge.Run(); err != nil {
 			logger.Error("stdio bridge error: " + err.Error())
 		}
@@ -61,5 +76,6 @@ var connectCmd = &cobra.Command{
 }
 
 func init() {
+	connectCmd.Flags().StringSliceVarP(&connectForwards, "forward", "F", []string{}, "Forward address (e.g. tcp://8080 or udp://9000)")
 	RootCmd.AddCommand(connectCmd)
 }
