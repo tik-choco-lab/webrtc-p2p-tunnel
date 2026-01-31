@@ -33,7 +33,7 @@ func NewExecutor(manager *rtc.RTCManager, command []string) *Executor {
 }
 
 func (e *Executor) Run() error {
-	e.manager.OnTunnelMessage(func(peerID string, data []byte) {
+	e.manager.OnStdioMessage(func(peerID string, data []byte) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 
@@ -44,14 +44,12 @@ func (e *Executor) Run() error {
 		if e.stdin != nil {
 			streamType, payload := stdio.Unwrap(data)
 			if streamType == stdio.StreamStdin {
-				if _, err := e.stdin.Write(payload); err != nil {
-					logger.Debug("Failed to write to child stdin: " + err.Error())
-				}
+				e.stdin.Write(payload)
 			}
 		}
 	})
 
-	e.manager.OnTunnelOpen(func(peerID string) {
+	e.manager.OnStdioOpen(func(peerID string) {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 
@@ -67,10 +65,10 @@ func (e *Executor) Run() error {
 		}
 	})
 
-	e.manager.OnTunnelClose(func(peerID string) {
+	e.manager.OnStdioClose(func(peerID string) {
 		e.mu.Lock()
 		if e.activePeer != nil && e.activePeer.PeerID() == peerID {
-			logger.Debug("Tunnel closed, stopping proxy command")
+			logger.Debug("Stdio closed, stopping proxy command")
 			e.stopCommand()
 			e.activePeer = nil
 		}
@@ -146,11 +144,9 @@ func (e *Executor) forwardStream(reader io.ReadCloser, streamType stdio.StreamTy
 			e.mu.Unlock()
 
 			if peer != nil {
-				dc := peer.DataChannelTunnel()
+				dc := peer.DataChannelStdio()
 				if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-					if err := dc.Send(data); err != nil {
-						logger.Debug("Failed to send stream data: " + err.Error())
-					}
+					dc.Send(data)
 				}
 			}
 		}
