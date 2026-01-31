@@ -30,7 +30,7 @@ var RootCmd = &cobra.Command{
 	Use:   "p2p",
 	Short: "WebRTC P2P Tunnel CLI",
 	Long: `A P2P tunnel application using WebRTC.
-Supports TCP forwarding, standard I/O bridging, and remote command execution.`,
+Supports TCP/UDP forwarding and standard I/O bridging.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		logger.InitWithOptions(logger.Options{
 			Verbosity: verbose,
@@ -111,15 +111,31 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.tunnel.yaml)")
+	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file path")
+	RootCmd.PersistentFlags().CountVarP(&verbose, "verbose", "v", "-v for info, -vv for debug")
 
-	RootCmd.PersistentFlags().CountVarP(&verbose, "verbose", "v", "verbose output (-v for info, -vv for debug)")
+	initConnect()
+	initServe()
+}
 
-	RootCmd.PersistentFlags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
-	RootCmd.PersistentFlags().StringVar(&roomID, "room", "", "Room ID (auto-generated if empty)")
+func initConnect() {
+	connectCmd.Flags().StringSliceVarP(&connectForwards, "forward", "F", []string{}, "Forward address (e.g. tcp://:8080)")
 
-	viper.BindPFlag("url", RootCmd.PersistentFlags().Lookup("url"))
-	viper.BindPFlag("room", RootCmd.PersistentFlags().Lookup("room"))
+	connectCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
+
+	viper.BindPFlag("url", connectCmd.Flags().Lookup("url"))
+
+	RootCmd.AddCommand(connectCmd)
+}
+
+func initServe() {
+	serveCmd.Flags().StringSliceVarP(&serveForwards, "forward", "F", []string{}, "Forward target (e.g. tcp://127.0.0.1:80 or udp://127.0.0.1:9000)")
+
+	serveCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
+
+	viper.BindPFlag("url", serveCmd.Flags().Lookup("url"))
+
+	RootCmd.AddCommand(serveCmd)
 }
 
 func initConfig() {

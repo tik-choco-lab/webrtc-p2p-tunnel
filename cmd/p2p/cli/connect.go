@@ -21,21 +21,12 @@ var (
 )
 
 var connectCmd = &cobra.Command{
-	Use:   "connect [room-id]",
-	Short: "Connect to a tunnel room and bridge stdio",
-	Args:  cobra.MaximumNArgs(1),
+	Use:   "connect <room-id>",
+	Short: "(Client side) Join a room and bridge to your stdio",
+	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		currentRoomID := args[0]
 		url := viper.GetString("url")
-		currentRoomID := viper.GetString("room")
-
-		if len(args) > 0 {
-			currentRoomID = args[0]
-		}
-
-		if currentRoomID == "" {
-			logger.Error("Room ID is required either via argument or --room flag")
-			os.Exit(1)
-		}
 
 		selfID := uuid.New().String()
 		sig, err := signalclient.NewClient(url, selfID, currentRoomID)
@@ -73,9 +64,4 @@ var connectCmd = &cobra.Command{
 
 		manager.Close()
 	},
-}
-
-func init() {
-	connectCmd.Flags().StringSliceVarP(&connectForwards, "forward", "F", []string{}, "Forward address (e.g. tcp://8080 or udp://9000)")
-	RootCmd.AddCommand(connectCmd)
 }

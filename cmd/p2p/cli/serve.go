@@ -30,13 +30,30 @@ func generateRoomID() string {
 }
 
 var serveCmd = &cobra.Command{
-	Use:   "serve -- [command...]",
-	Short: "Serve a command or wait for connections",
-	Long:  `Starts the tunnel in server mode. If a command is specified after '--', it will be executed when a peer connects, and its stdio will be bridged.`,
+	Use:   "serve [room-id] [flags] -- [command...]",
+	Short: "(Server side) Run a command and publish it to a room",
+	Long:  `Starts the tunnel in server mode. If a room-id is provided, it joins that room; otherwise, it generates a random one. If a command is specified after '--', it will be executed when a peer connects, and its stdio will be bridged.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		url := viper.GetString("url")
-		currentRoomID := viper.GetString("room")
+		dashIdx := cmd.ArgsLenAtDash()
+		var currentRoomID string
+		var remoteCommand []string
 
+		if dashIdx >= 0 {
+			if dashIdx > 0 {
+				currentRoomID = args[0]
+			}
+			remoteCommand = args[dashIdx:]
+		} else {
+			if len(args) > 0 {
+				currentRoomID = args[0]
+			}
+		}
+
+		if currentRoomID == "" {
+			currentRoomID = viper.GetString("room")
+		}
+
+		url := viper.GetString("url")
 		if currentRoomID == "" {
 			currentRoomID = generateRoomID()
 			fmt.Fprintf(os.Stderr, "Room ID: %s\n", currentRoomID)
@@ -63,9 +80,9 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		if len(args) > 0 {
+		if len(remoteCommand) > 0 {
 			logger.Debug("Running in proxy-cmd mode")
-			executor := proxy.NewExecutor(manager, args)
+			executor := proxy.NewExecutor(manager, remoteCommand)
 
 			go func() {
 				<-sigChan
@@ -80,14 +97,9 @@ var serveCmd = &cobra.Command{
 			logger.Debug("Running in port-forwarding mode")
 			<-sigChan
 		} else {
-			logger.Error("No command or forwards specified. Usage: tunnel serve -- <command> OR tunnel serve -F <forward>")
+			logger.Error("No command or forwards specified. Usage: p2p serve [room-id] -- <command> OR p2p serve [room-id] -F <forward>")
 		}
 
 		manager.Close()
 	},
-}
-
-func init() {
-	serveCmd.Flags().StringSliceVarP(&serveForwards, "forward", "F", []string{}, "Forward target (e.g. tcp://127.0.0.1:80 or udp://127.0.0.1:9000)")
-	RootCmd.AddCommand(serveCmd)
 }
