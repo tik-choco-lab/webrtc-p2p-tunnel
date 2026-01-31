@@ -202,12 +202,7 @@ func (m *RTCManager) handleRelayedSignal(data []byte) {
 func (m *RTCManager) processSignal(msg SignalMessage) {
 	switch msg.Type {
 	case "Request":
-		existingPeer := m.GetPeer(msg.SenderId)
-		if existingPeer != nil && existingPeer.isConnected() {
-			logger.Debug("Ignoring Request from already connected peer: " + msg.SenderId)
-			return
-		}
-
+		// existingPeer check removed to allow re-connection/discovery attempts
 		peer := m.getOrCreatePeer(msg.SenderId)
 		if msg.Role != "" {
 			peer.setRole(msg.Role)
@@ -302,6 +297,7 @@ func (m *RTCManager) sendSignal(msg SignalMessage) {
 		SenderId:   msg.SenderId,
 		ReceiverId: msg.ReceiverId,
 		RoomId:     msg.RoomId,
+		Role:       string(msg.Role),
 	})
 }
 

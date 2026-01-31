@@ -120,19 +120,19 @@ func (m *manager) waitForTunnelReady(timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		serverPeers := m.rtcManager.GetServerPeers()
+		if len(serverPeers) == 0 {
+			logger.Debug("No server peers found in peer list")
+		}
 		for _, peer := range serverPeers {
 			dc := peer.DataChannelTunnel()
+			state := "nil"
+			if dc != nil {
+				state = dc.ReadyState().String()
+			}
+			logger.Debug(fmt.Sprintf("Checking peer %s: Role=%s, DCState=%s", peer.PeerID(), peer.Role(), state))
+
 			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
 				logger.Debug("Selected server peer: " + peer.PeerID())
-				return peer.PeerID(), nil
-			}
-		}
-
-		peers := m.rtcManager.GetAllPeers()
-		for _, peer := range peers {
-			dc := peer.DataChannelTunnel()
-			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-				logger.Debug("Selected peer (no server available): " + peer.PeerID())
 				return peer.PeerID(), nil
 			}
 		}

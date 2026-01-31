@@ -194,9 +194,6 @@ func (m *manager) waitForTunnelReady(timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		peers := m.rtcManager.GetServerPeers()
-		if len(peers) == 0 {
-			peers = m.rtcManager.GetAllPeers()
-		}
 		for _, peer := range peers {
 			dc := peer.DataChannelTunnel()
 			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
