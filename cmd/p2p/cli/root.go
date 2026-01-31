@@ -114,6 +114,9 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file path")
 	RootCmd.PersistentFlags().CountVarP(&verbose, "verbose", "v", "-v for info, -vv for debug")
 
+	RootCmd.CompletionOptions.HiddenDefaultCmd = true
+	RootCmd.SetHelpCommand(&cobra.Command{Use: "nohelp", Hidden: true})
+
 	initConnect()
 	initServe()
 }
