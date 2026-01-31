@@ -15,6 +15,7 @@ import (
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
 	signalclient "github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/tcp"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/udp"
 )
 
 var (
@@ -28,6 +29,9 @@ var (
 	listenPort int
 	remoteAddr string
 	isServer   bool
+
+	udpListenPort int
+	udpRemoteAddr string
 )
 
 var RootCmd = &cobra.Command{
@@ -62,14 +66,20 @@ Supports TCP forwarding, standard I/O bridging, and remote command execution.`,
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-		chatOnlyMode := listenPort == -1 && remoteAddr == ""
+		chatOnlyMode := listenPort == -1 && remoteAddr == "" && udpListenPort == -1 && udpRemoteAddr == ""
 
 		if chatOnlyMode {
 			println("=== Chat Mode ===")
 			println("Type a message and press Enter to send.")
 		} else {
-			logger.Debug("listenPort: " + strconv.Itoa(listenPort))
-			logger.Debug("remoteAddr: " + remoteAddr)
+			if listenPort != -1 || remoteAddr != "" {
+				logger.Debug("TCP listenPort: " + strconv.Itoa(listenPort))
+				logger.Debug("TCP remoteAddr: " + remoteAddr)
+			}
+			if udpListenPort != -1 || udpRemoteAddr != "" {
+				logger.Debug("UDP listenPort: " + strconv.Itoa(udpListenPort))
+				logger.Debug("UDP remoteAddr: " + udpRemoteAddr)
+			}
 			logger.Debug("isServer: " + strconv.FormatBool(isServer))
 		}
 
@@ -82,7 +92,12 @@ Supports TCP forwarding, standard I/O bridging, and remote command execution.`,
 				logger.Debug("Tunnel opened with peer: " + peerID)
 			})
 
-			go tcp.ListenAndServe(manager, listenPort, remoteAddr)
+			if listenPort != -1 || remoteAddr != "" {
+				go tcp.ListenAndServe(manager, listenPort, remoteAddr)
+			}
+			if udpListenPort != -1 || udpRemoteAddr != "" {
+				go udp.ListenAndServe(manager, udpListenPort, udpRemoteAddr)
+			}
 		}
 
 		go func() {
@@ -114,9 +129,12 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
 	RootCmd.PersistentFlags().StringVar(&roomID, "room", "", "Room ID (auto-generated if empty)")
 
-	RootCmd.Flags().IntVarP(&listenPort, "listen", "l", -1, "Local port to listen on")
-	RootCmd.Flags().StringVarP(&remoteAddr, "remote", "r", "", "Remote address to forward to")
+	RootCmd.Flags().IntVarP(&listenPort, "listen", "l", -1, "Local TCP port to listen on")
+	RootCmd.Flags().StringVarP(&remoteAddr, "remote", "r", "", "Remote TCP address to forward to")
 	RootCmd.Flags().BoolVarP(&isServer, "server", "s", false, "Run as server mode (data receiver)")
+
+	RootCmd.Flags().IntVar(&udpListenPort, "udp-listen", -1, "Local UDP port to listen on")
+	RootCmd.Flags().StringVar(&udpRemoteAddr, "udp-remote", "", "Remote UDP address to forward to")
 
 	viper.BindPFlag("url", RootCmd.PersistentFlags().Lookup("url"))
 	viper.BindPFlag("room", RootCmd.PersistentFlags().Lookup("room"))

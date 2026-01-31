@@ -18,6 +18,8 @@ import (
 
 const (
 	tunnelReadyTimeout = 30 * time.Second
+	tcpBufferSize      = 4096
+	retryInterval      = 50 * time.Millisecond
 )
 
 type manager struct {
@@ -137,7 +139,7 @@ func (m *manager) waitForTunnelReady(timeout time.Duration) (string, error) {
 		if time.Now().After(deadline) {
 			return "", errors.New("tunnel data channel not open")
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(retryInterval)
 	}
 }
 
@@ -146,7 +148,7 @@ func (m *manager) forwardTCPToDC(connID string) {
 	if !ok {
 		return
 	}
-	buf := make([]byte, 4096)
+	buf := make([]byte, tcpBufferSize)
 	for {
 		n, err := tc.conn.Read(buf)
 		if n > 0 {
