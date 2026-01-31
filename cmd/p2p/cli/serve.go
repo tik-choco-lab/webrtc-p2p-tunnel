@@ -114,7 +114,7 @@ var serveCmd = &cobra.Command{
 			logger.Debug("Running in port-forwarding mode")
 			<-sigChan
 		} else {
-			logger.Error("No command or forwards specified. Usage: p2p serve [room-id] -- <command> OR p2p serve [room-id] -F <forward>")
+			logger.Error("No command or forwards specified. Usage: p2p serve [room-id] [forward-target] ...")
 		}
 
 		manager.Close()

@@ -27,10 +27,14 @@ var (
 )
 
 var RootCmd = &cobra.Command{
-	Use:   "p2p",
+	Use:   "p2p [room-id]",
 	Short: "WebRTC P2P Tunnel CLI",
 	Long: `A P2P tunnel application using WebRTC.
-Supports TCP/UDP forwarding and standard I/O bridging.`,
+Supports TCP/UDP forwarding and standard I/O bridging.
+
+If no command is specified, p2p starts in Chat Mode.
+If a room-id is provided, it joins that room; otherwise, it generates a random one.`,
+	Args: cobra.MaximumNArgs(1),
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		logger.InitWithOptions(logger.Options{
 			Verbosity: verbose,
@@ -40,6 +44,10 @@ Supports TCP/UDP forwarding and standard I/O bridging.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		url := viper.GetString("url")
 		currentRoomID := viper.GetString("room")
+
+		if len(args) > 0 {
+			currentRoomID = args[0]
+		}
 
 		if currentRoomID == "" {
 			currentRoomID = generateRoomID()
