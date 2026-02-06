@@ -19,6 +19,16 @@ const (
 	ReconnectDelay    = 1 * time.Second
 	PeerIDPrefixLen   = 4
 	DefaultSTUNServer = "stun:stun.l.google.com:19302"
+
+	DCLabelTunnel = "tunnel"
+	DCLabelChat   = "chat"
+	DCLabelSignal = "signal"
+	DCLabelStdio  = "stdio"
+	DCLabelAuth   = "auth"
+
+	LogTruncateLen = 8
+	MsgIDFormat    = "%s_%s_%d"
+	TimeFormat     = "150405.000"
 )
 
 var (
@@ -119,23 +129,12 @@ func (rp *RemotePeer) startOffer() error {
 	rp.authenticated = rp.manager.authorizer == nil
 	rp.mu.Unlock()
 
-	for _, label := range []string{"tunnel", "chat", "signal", "stdio", "auth"} {
+	for _, label := range []string{DCLabelTunnel, DCLabelChat, DCLabelSignal, DCLabelStdio, DCLabelAuth} {
 		dc, err := pc.CreateDataChannel(label, nil)
 		if err != nil {
 			return err
 		}
-		switch label {
-		case "tunnel":
-			rp.initTunnelDC(dc)
-		case "chat":
-			rp.initChatDC(dc)
-		case "signal":
-			rp.initSignalDC(dc)
-		case "stdio":
-			rp.initStdioDC(dc)
-		case "auth":
-			rp.initAuthDC(dc)
-		}
+		rp.initDCByLabel(dc)
 	}
 
 	offer, _ := pc.CreateOffer(nil)
@@ -167,20 +166,7 @@ func (rp *RemotePeer) handleOffer(data string) error {
 	rp.authenticated = rp.manager.authorizer == nil
 	rp.mu.Unlock()
 
-	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		switch dc.Label() {
-		case "chat":
-			rp.initChatDC(dc)
-		case "tunnel":
-			rp.initTunnelDC(dc)
-		case "signal":
-			rp.initSignalDC(dc)
-		case "stdio":
-			rp.initStdioDC(dc)
-		case "auth":
-			rp.initAuthDC(dc)
-		}
-	})
+	pc.OnDataChannel(rp.initDCByLabel)
 
 	var offer webrtc.SessionDescription
 	if err := json.Unmarshal([]byte(data), &offer); err != nil {
@@ -232,6 +218,19 @@ func (rp *RemotePeer) handleCandidate(data string) error {
 		return err
 	}
 	return pc.AddICECandidate(cand)
+}
+
+func (rp *RemotePeer) initDCByLabel(dc *webrtc.DataChannel) {
+	inits := map[string]func(*webrtc.DataChannel){
+		DCLabelTunnel: rp.initTunnelDC,
+		DCLabelChat:   rp.initChatDC,
+		DCLabelSignal: rp.initSignalDC,
+		DCLabelStdio:  rp.initStdioDC,
+		DCLabelAuth:   rp.initAuthDC,
+	}
+	if init, ok := inits[dc.Label()]; ok {
+		init(dc)
+	}
 }
 
 func (rp *RemotePeer) initChatDC(dc *webrtc.DataChannel) {
@@ -314,73 +313,133 @@ func (rp *RemotePeer) initAuthDC(dc *webrtc.DataChannel) {
 			return
 		}
 
-		switch authMsg.Type {
-		case "challenge":
-			if rp.manager.authenticator != nil {
-				sig, _ := rp.manager.authenticator.Sign([]byte(authMsg.Nonce))
-				identity := base64.StdEncoding.EncodeToString(rp.manager.authenticator.PublicKey())
-				resp, _ := json.Marshal(auth.Message{
-					Type:      "response",
-					Nonce:     authMsg.Nonce,
-					Token:     rp.manager.authenticator.Token(),
-					Identity:  identity,
-					Signature: base64.StdEncoding.EncodeToString(sig),
-				})
-				dc.Send(resp)
-			}
-		case "response":
-			if rp.manager.authorizer != nil {
-				pubKey, _ := base64.StdEncoding.DecodeString(authMsg.Identity)
-
-				authorized := false
-				if ta, ok := rp.manager.authorizer.(auth.TokenAuthorizer); ok {
-					authorized = ta.AuthorizeWithToken(pubKey, authMsg.Token)
-				} else {
-					authorized = rp.manager.authorizer.Authorize(pubKey)
-				}
-
-				if auth.Verify(pubKey, authMsg.Nonce, authMsg.Signature) &&
-					authorized &&
-					authMsg.Nonce == rp.lastChallenge {
-					rp.mu.Lock()
-					rp.authenticated = true
-					rp.mu.Unlock()
-					logger.Info("[" + rp.peerID + "] Authenticated successfully")
-					resp, _ := json.Marshal(auth.Message{Type: "success"})
-					dc.Send(resp)
-					rp.manager.notifyAuth(rp.peerID, true)
-					if dc := rp.DataChannelTunnel(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-						rp.manager.notifyTunnelOpen(rp.peerID)
-					}
-					if dc := rp.DataChannelStdio(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-						rp.manager.notifyStdioOpen(rp.peerID)
-					}
-				} else {
-					logger.Error("[" + rp.peerID + "] Authentication failed")
-					resp, _ := json.Marshal(auth.Message{Type: "error", Error: "unauthorized"})
-					dc.Send(resp)
-					rp.manager.notifyAuth(rp.peerID, false)
-					rp.Close()
-				}
-			}
-		case "success":
-			rp.mu.Lock()
-			rp.authenticated = true
-			rp.mu.Unlock()
-			logger.Info("[" + rp.peerID + "] Server authenticated us")
-			rp.manager.notifyAuth(rp.peerID, true)
-			if dc := rp.DataChannelTunnel(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-				rp.manager.notifyTunnelOpen(rp.peerID)
-			}
-			if dc := rp.DataChannelStdio(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-				rp.manager.notifyStdioOpen(rp.peerID)
-			}
-		case "error":
-			logger.Error("[" + rp.peerID + "] Server rejected authentication: " + authMsg.Error)
-			rp.manager.notifyAuth(rp.peerID, false)
-			rp.Close()
+		handlers := map[string]func(){
+			auth.AuthMsgTypeChallenge: func() { rp.handleAuthChallenge(dc, authMsg) },
+			auth.AuthMsgTypeResponse:  func() { rp.handleAuthResponse(dc, authMsg) },
+			auth.AuthMsgTypeSuccess:   func() { rp.handleAuthSuccess() },
+			auth.AuthMsgTypeError:     func() { rp.handleAuthError(authMsg) },
+		}
+		if handler, ok := handlers[authMsg.Type]; ok {
+			handler()
 		}
 	})
+}
+
+func (rp *RemotePeer) handleAuthChallenge(dc *webrtc.DataChannel, authMsg auth.Message) {
+	if rp.manager.authenticator == nil {
+		return
+	}
+	logger.Debug("[" + rp.peerID + "] Auth: Received challenge, signing response")
+
+	nonceBytes, err := base64.StdEncoding.DecodeString(authMsg.Nonce)
+	if err != nil {
+		logger.Error("[" + rp.peerID + "] Auth: Failed to decode nonce: " + err.Error())
+		return
+	}
+
+	sig, err := rp.manager.authenticator.Sign(nonceBytes)
+	if err != nil {
+		logger.Error("[" + rp.peerID + "] Auth: Failed to sign nonce: " + err.Error())
+		return
+	}
+
+	pubKey := rp.manager.authenticator.PublicKey()
+	identity := base64.StdEncoding.EncodeToString(pubKey)
+	sigStr := base64.StdEncoding.EncodeToString(sig)
+	sigShort := sigStr
+	if len(sigShort) > LogTruncateLen {
+		sigShort = sigShort[:LogTruncateLen]
+	}
+
+	logger.Debug(fmt.Sprintf("[%s] Auth: Debug Info - PubKey(hex): %x, Nonce(raw): %s, Signature(hex): %s",
+		rp.peerID, pubKey, authMsg.Nonce, sigShort+"..."))
+
+	resp, _ := json.Marshal(auth.Message{
+		Type:      "response",
+		Nonce:     authMsg.Nonce,
+		Token:     rp.manager.authenticator.Token(),
+		Identity:  identity,
+		Signature: sigStr,
+	})
+	dc.Send(resp)
+}
+
+func (rp *RemotePeer) handleAuthResponse(dc *webrtc.DataChannel, authMsg auth.Message) {
+	if rp.manager.authorizer == nil {
+		return
+	}
+	pubKey, err := base64.StdEncoding.DecodeString(authMsg.Identity)
+	if err != nil {
+		logger.Error(fmt.Sprintf("[%s] Auth: Failed to decode identity: %v", rp.peerID, err))
+		return
+	}
+
+	idShort := authMsg.Identity
+	if len(idShort) > LogTruncateLen {
+		idShort = idShort[:LogTruncateLen]
+	}
+	logger.Debug("[" + rp.peerID + "] Auth: Received response from " + idShort + "...")
+
+	authorized := auth.Authorize(rp.manager.authorizer, pubKey, authMsg.Token)
+	logger.Debug(fmt.Sprintf("[%s] Auth: Authorization result: %v", rp.peerID, authorized))
+
+	sigOk := auth.Verify(pubKey, authMsg.Nonce, authMsg.Signature)
+	rp.mu.RLock()
+	nonceOk := authMsg.Nonce == rp.lastChallenge
+	rp.mu.RUnlock()
+
+	sigShort := authMsg.Signature
+	if len(sigShort) > LogTruncateLen {
+		sigShort = sigShort[:LogTruncateLen]
+	}
+
+	logger.Debug(fmt.Sprintf("[%s] Auth: Debug Info - PubKey(hex): %x, Nonce(raw): %s, Signature(hex): %s",
+		rp.peerID, pubKey, authMsg.Nonce, sigShort+"..."))
+
+	logger.Debug(fmt.Sprintf("[%s] Auth: Verify results - Signature: %v, Nonce: %v", rp.peerID, sigOk, nonceOk))
+
+	if sigOk && authorized && nonceOk {
+		rp.mu.Lock()
+		rp.authenticated = true
+		rp.mu.Unlock()
+		logger.Info("[" + rp.peerID + "] Authenticated successfully")
+		resp, _ := json.Marshal(auth.Message{Type: "success"})
+		dc.Send(resp)
+		rp.manager.notifyAuth(rp.peerID, true)
+		rp.notifyChannelsOnAuth()
+	} else {
+		logger.Error("[" + rp.peerID + "] Authentication failed")
+		resp, _ := json.Marshal(auth.Message{Type: "error", Error: "unauthorized"})
+		dc.Send(resp)
+		rp.manager.notifyAuth(rp.peerID, false)
+		rp.Close()
+	}
+}
+
+func (rp *RemotePeer) handleAuthSuccess() {
+	rp.mu.Lock()
+	rp.authenticated = true
+	rp.mu.Unlock()
+	logger.Info("[" + rp.peerID + "] Server authenticated us")
+	logger.Debug("[" + rp.peerID + "] Auth: Success received")
+	rp.manager.notifyAuth(rp.peerID, true)
+	rp.notifyChannelsOnAuth()
+}
+
+func (rp *RemotePeer) handleAuthError(authMsg auth.Message) {
+	logger.Error("[" + rp.peerID + "] Server rejected authentication: " + authMsg.Error)
+	logger.Debug("[" + rp.peerID + "] Auth: Error received: " + authMsg.Error)
+	rp.manager.notifyAuth(rp.peerID, false)
+	rp.Close()
+}
+
+func (rp *RemotePeer) notifyChannelsOnAuth() {
+	if dc := rp.DataChannelTunnel(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+		rp.manager.notifyTunnelOpen(rp.peerID)
+	}
+	if dc := rp.DataChannelStdio(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+		rp.manager.notifyStdioOpen(rp.peerID)
+	}
 }
 
 func (rp *RemotePeer) isAuthorized() bool {
@@ -461,5 +520,5 @@ func nextMsgID(selfID string) string {
 	if len(prefix) > PeerIDPrefixLen {
 		prefix = prefix[:PeerIDPrefixLen]
 	}
-	return fmt.Sprintf("%s_%s_%d", time.Now().Format("150405.000"), prefix, seq)
+	return fmt.Sprintf(MsgIDFormat, time.Now().Format(TimeFormat), prefix, seq)
 }

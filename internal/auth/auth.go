@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -25,6 +27,30 @@ const (
 	AuthTypeKeys   AuthType = "keys"
 	AuthTypeGitHub AuthType = "github"
 	AuthTypeInvite AuthType = "invite"
+)
+
+const (
+	AuthMsgTypeChallenge = "challenge"
+	AuthMsgTypeResponse  = "response"
+	AuthMsgTypeSuccess   = "success"
+	AuthMsgTypeError     = "error"
+
+	InviteTokenPrefix  = "p2p_invite_"
+	DefaultConfigDir   = ".p2p"
+	DefaultAuthKeyFile = "authorized_keys"
+	DefaultIDKeyFile   = "id_ed25519"
+
+	GitHubUserKeysURL  = "https://github.com/%s.keys"
+	GitHubOrgKeysURL   = "https://api.github.com/orgs/%s/public_members"
+	GitHubAcceptHeader = "application/vnd.github.v3+json"
+	GitHubOrgPrefix    = "org/"
+	AuthPrefixGitHub   = "github:"
+	SSHPubKeyPrefixED  = "ssh-ed25519"
+
+	InviteHeader    = "\n--- INVITE MODE ---\n"
+	InviteFooter    = "-------------------\n\n"
+	InviteClientMsg = "Run this on client:\n  p2p connect %s --auth %s\n"
+	DefaultRoomID   = "<room>"
 )
 
 const (
@@ -64,7 +90,13 @@ func (s *KeyStore) Add(pubKey ed25519.PublicKey) {
 }
 
 func (s *KeyStore) Authorize(pubKey ed25519.PublicKey) bool {
-	return s.keys[string(pubKey)]
+	ok := s.keys[string(pubKey)]
+	if !ok {
+		logger.Debug("KeyStore: Key not found in authorized list")
+	} else {
+		logger.Debug("KeyStore: Key authorized")
+	}
+	return ok
 }
 
 func (s *KeyStore) LoadAuthorizedKeys(path string) error {
@@ -121,38 +153,74 @@ func saveAuthorizedKey(pubKey ed25519.PublicKey) error {
 }
 
 type GitHubAuthorizer struct {
-	users []string
-	orgs  []string
-	keys  *KeyStore
+	targets []string
+	keys    *KeyStore
 }
 
-func NewGitHubAuthorizer(users []string, orgs []string) *GitHubAuthorizer {
+func NewGitHubAuthorizer(targets []string) *GitHubAuthorizer {
 	return &GitHubAuthorizer{
-		users: users,
-		orgs:  orgs,
-		keys:  NewKeyStore(),
+		targets: targets,
+		keys:    NewKeyStore(),
 	}
 }
 
 func (g *GitHubAuthorizer) FetchKeys(ctx context.Context) error {
-	for _, user := range g.users {
-		req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://github.com/%s.keys", user), nil)
-		if err != nil {
-			return err
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
+	for _, target := range g.targets {
+		if strings.HasPrefix(target, GitHubOrgPrefix) {
+			if err := g.fetchOrgKeys(ctx, strings.TrimPrefix(target, GitHubOrgPrefix)); err != nil {
+				return err
+			}
 			continue
 		}
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
+		if err := g.fetchUserKeys(ctx, target); err != nil {
 			return err
 		}
-		g.keys.ParseAuthorizedKeys(data)
+	}
+	return nil
+}
+
+func (g *GitHubAuthorizer) fetchUserKeys(ctx context.Context, user string) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(GitHubUserKeysURL, user), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	return g.keys.ParseAuthorizedKeys(data)
+}
+
+func (g *GitHubAuthorizer) fetchOrgKeys(ctx context.Context, org string) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(GitHubOrgKeysURL, org), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", GitHubAcceptHeader)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var members []struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&members); err != nil {
+		return err
+	}
+	for _, m := range members {
+		_ = g.fetchUserKeys(ctx, m.Login)
 	}
 	return nil
 }
@@ -226,55 +294,80 @@ func NewChallenge() (string, error) {
 
 func Verify(pubKey ed25519.PublicKey, nonce string, signature string) bool {
 	nonceBytes, err := base64.StdEncoding.DecodeString(nonce)
-	if err != nil {
-		return false
-	}
-	sigBytes, err := base64.StdEncoding.DecodeString(signature)
-	if err != nil {
+	sigBytes, err2 := base64.StdEncoding.DecodeString(signature)
+	if err != nil || err2 != nil {
 		return false
 	}
 	return ed25519.Verify(pubKey, nonceBytes, sigBytes)
 }
 
+func Authorize(a Authorizer, pubKey ed25519.PublicKey, token string) bool {
+	if a == nil {
+		return true
+	}
+	if ta, ok := a.(TokenAuthorizer); ok {
+		return ta.AuthorizeWithToken(pubKey, token)
+	}
+	return a.Authorize(pubKey)
+}
+
 func GetDefaultAuthorizedKeysPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".p2p", "authorized_keys")
+	return filepath.Join(home, DefaultConfigDir, DefaultAuthKeyFile)
 }
 
 func GetDefaultIDKeyPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".p2p", "id_ed25519")
+	return filepath.Join(home, DefaultConfigDir, DefaultIDKeyFile)
 }
 
-func CreateAuthorizer(s string) (Authorizer, error) {
-	if s == "" {
+func CreateAuthorizer(s, roomID string) (Authorizer, error) {
+	switch {
+	case s == "":
 		return nil, nil
+	case s == string(AuthTypeInvite):
+		return createInviteAuth(roomID)
+	case strings.HasPrefix(s, AuthPrefixGitHub):
+		return createGitHubAuth(strings.TrimPrefix(s, AuthPrefixGitHub))
+	case strings.HasPrefix(s, SSHPubKeyPrefixED):
+		return createSSHAuth(s)
+	default:
+		return createKeyStoreAuth(s)
 	}
-	if s == "invite" {
-		token := make([]byte, InviteTokenLen)
-		rand.Read(token)
-		tokenStr := hex.EncodeToString(token)
-		fmt.Printf("\n--- INVITE MODE ---\n")
-		fmt.Printf("Invite Token: p2p_invite_%s\n", tokenStr)
-		fmt.Printf("Run this on client:\n  p2p connect <room> --auth p2p_invite_%s\n", tokenStr)
-		fmt.Printf("-------------------\n\n")
-		return &InviteAuthorizer{inviteToken: "p2p_invite_" + tokenStr}, nil
+}
+
+func createInviteAuth(roomID string) (Authorizer, error) {
+	token := make([]byte, InviteTokenLen)
+	rand.Read(token)
+	tokenStr := hex.EncodeToString(token)
+	invite := InviteTokenPrefix + tokenStr
+	fmt.Printf(InviteHeader)
+	logger.Info(fmt.Sprintf("Invite Token: %s", invite))
+	if roomID == "" {
+		roomID = DefaultRoomID
 	}
-	if strings.HasPrefix(s, "github:") {
-		user := strings.TrimPrefix(s, "github:")
-		a := NewGitHubAuthorizer([]string{user}, nil)
-		if err := a.FetchKeys(context.Background()); err != nil {
-			return nil, err
-		}
-		return a, nil
+	fmt.Printf(InviteClientMsg, roomID, invite)
+	fmt.Printf(InviteFooter)
+	return &InviteAuthorizer{inviteToken: invite}, nil
+}
+
+func createGitHubAuth(target string) (Authorizer, error) {
+	a := NewGitHubAuthorizer([]string{target})
+	if err := a.FetchKeys(context.Background()); err != nil {
+		return nil, err
 	}
-	if strings.HasPrefix(s, "ssh-ed25519") {
-		ks := NewKeyStore()
-		if err := ks.ParseAuthorizedKeys([]byte(s)); err != nil {
-			return nil, err
-		}
-		return ks, nil
+	return a, nil
+}
+
+func createSSHAuth(s string) (Authorizer, error) {
+	ks := NewKeyStore()
+	if err := ks.ParseAuthorizedKeys([]byte(s)); err != nil {
+		return nil, err
 	}
+	return ks, nil
+}
+
+func createKeyStoreAuth(s string) (Authorizer, error) {
 	ks := NewKeyStore()
 	if err := ks.LoadAuthorizedKeys(s); err != nil {
 		return nil, err
@@ -284,7 +377,7 @@ func CreateAuthorizer(s string) (Authorizer, error) {
 
 func CreateAuthenticator(s string) (Authenticator, error) {
 	var token string
-	if strings.HasPrefix(s, "p2p_invite_") {
+	if strings.HasPrefix(s, InviteTokenPrefix) {
 		token = s
 		s = ""
 	}
@@ -330,10 +423,12 @@ func (a *InviteAuthorizer) Authorize(pubKey ed25519.PublicKey) bool {
 	if a.pubKey == nil {
 		a.pubKey = pubKey
 		saveAuthorizedKey(pubKey)
-		fmt.Printf("Invite Mode: Trust established and saved to %s\n", GetDefaultAuthorizedKeysPath())
+		logger.Info("Invite Mode: Trust established and saved")
 		return true
 	}
-	return string(a.pubKey) == string(pubKey)
+	ok := string(a.pubKey) == string(pubKey)
+	logger.Debug(fmt.Sprintf("Invite Mode: Authorize result: %v", ok))
+	return ok
 }
 
 func (a *InviteAuthorizer) AuthorizeWithToken(pubKey ed25519.PublicKey, token string) bool {
@@ -343,10 +438,13 @@ func (a *InviteAuthorizer) AuthorizeWithToken(pubKey ed25519.PublicKey, token st
 		if a.pubKey == nil {
 			a.pubKey = pubKey
 			saveAuthorizedKey(pubKey)
-			fmt.Printf("Invite Mode: Token verified. Trust established and saved to %s\n", GetDefaultAuthorizedKeysPath())
+			logger.Info("Invite Mode: Token verified. Trust established.")
 		}
-		return string(a.pubKey) == string(pubKey)
+		ok := string(a.pubKey) == string(pubKey)
+		logger.Debug(fmt.Sprintf("Invite Mode: AuthorizeWithToken result: %v", ok))
+		return ok
 	}
+	logger.Debug("Invite Mode: Token mismatch or empty")
 	return false
 }
 

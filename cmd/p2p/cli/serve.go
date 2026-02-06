@@ -42,13 +42,13 @@ var serveCmd = &cobra.Command{
 	Example: `  # Auto-generate room and serve local port 80
   p2p serve :80
 
-  # Specific room and forward target (TCP or UDP)
-  p2p serve my-room :80
-  p2p serve my-room tcp://127.0.0.1:80
-  p2p serve my-room udp://127.0.0.1:9000
-
   # Execute command in specific room
-  p2p serve my-room -- python server.py`,
+  p2p serve my-room -- python server.py
+
+  # Auth Examples:
+  p2p serve my-room :80 --auth github:fog-zs
+  p2p serve my-room :80 --auth github:org/tik-choco-lab
+  p2p serve my-room :80 --auth invite`,
 	Run: func(cmd *cobra.Command, args []string) {
 		serveForwards = nil
 		dashIdx := cmd.ArgsLenAtDash()
@@ -103,7 +103,7 @@ var serveCmd = &cobra.Command{
 		if aStr != "" || len(alists) > 0 {
 			ma := &auth.MultiAuthorizer{}
 			if aStr != "" {
-				authorizer, err := auth.CreateAuthorizer(aStr)
+				authorizer, err := auth.CreateAuthorizer(aStr, currentRoomID)
 				if err != nil {
 					logger.Error("Failed to create authorizer: " + err.Error())
 					return
@@ -111,7 +111,7 @@ var serveCmd = &cobra.Command{
 				ma.Add(authorizer)
 			}
 			for _, item := range alists {
-				authorizer, err := auth.CreateAuthorizer(item)
+				authorizer, err := auth.CreateAuthorizer(item, currentRoomID)
 				if err != nil {
 					logger.Warn("Failed to create authorizer for " + item + ": " + err.Error())
 					continue

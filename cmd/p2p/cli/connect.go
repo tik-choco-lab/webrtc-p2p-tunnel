@@ -27,10 +27,9 @@ var connectCmd = &cobra.Command{
 	Example: `  # Standard I/O bridge only
   p2p connect my-room
 
-  # Standard I/O + Local listen (TCP or UDP)
-  p2p connect my-room :8080
-  p2p connect my-room tcp://:8080
-  p2p connect my-room udp://:9000`,
+  # Auth Examples:
+  p2p connect my-room --auth ~/.p2p/id_ed25519
+  p2p connect my-room --auth p2p_invite_abc123...`,
 	Args: cobra.RangeArgs(1, 2),
 	Run: func(cmd *cobra.Command, args []string) {
 		connectForwards = nil
@@ -59,6 +58,13 @@ var connectCmd = &cobra.Command{
 			manager.SetAuthenticator(authenticator)
 			logger.Info("Authentication enabled")
 		}
+
+		manager.OnAuth(func(peerID string, success bool) {
+			if !success {
+				logger.Error("Authentication failed with peer " + peerID + ". Exiting.")
+				os.Exit(1)
+			}
+		})
 
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
