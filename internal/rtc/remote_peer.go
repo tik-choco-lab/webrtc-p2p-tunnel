@@ -1,6 +1,7 @@
 package rtc
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +10,15 @@ import (
 	"time"
 
 	"github.com/pion/webrtc/v3"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/auth"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
+)
+
+const (
+	ReconnectDelay    = 1 * time.Second
+	PeerIDPrefixLen   = 4
+	DefaultSTUNServer = "stun:stun.l.google.com:19302"
 )
 
 var (
@@ -26,10 +34,13 @@ type RemotePeer struct {
 	dcChat   *webrtc.DataChannel
 	dcSignal *webrtc.DataChannel
 	dcStdio  *webrtc.DataChannel
+	dcAuth   *webrtc.DataChannel
 
-	manager      *RTCManager
-	mu           sync.RWMutex
-	reconnecting bool
+	manager       *RTCManager
+	mu            sync.RWMutex
+	reconnecting  bool
+	authenticated bool
+	lastChallenge string
 }
 
 func newRemotePeer(manager *RTCManager, peerID string) *RemotePeer {
@@ -59,7 +70,7 @@ func (rp *RemotePeer) DataChannelStdio() *webrtc.DataChannel {
 
 func (rp *RemotePeer) newPeerConnection() (*webrtc.PeerConnection, error) {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
+		ICEServers: []webrtc.ICEServer{{URLs: []string{DefaultSTUNServer}}},
 	})
 	if err != nil {
 		return nil, err
@@ -105,9 +116,10 @@ func (rp *RemotePeer) startOffer() error {
 	}
 	rp.mu.Lock()
 	rp.pc = pc
+	rp.authenticated = rp.manager.authorizer == nil
 	rp.mu.Unlock()
 
-	for _, label := range []string{"tunnel", "chat", "signal", "stdio"} {
+	for _, label := range []string{"tunnel", "chat", "signal", "stdio", "auth"} {
 		dc, err := pc.CreateDataChannel(label, nil)
 		if err != nil {
 			return err
@@ -121,6 +133,8 @@ func (rp *RemotePeer) startOffer() error {
 			rp.initSignalDC(dc)
 		case "stdio":
 			rp.initStdioDC(dc)
+		case "auth":
+			rp.initAuthDC(dc)
 		}
 	}
 
@@ -150,6 +164,7 @@ func (rp *RemotePeer) handleOffer(data string) error {
 	}
 	rp.mu.Lock()
 	rp.pc = pc
+	rp.authenticated = rp.manager.authorizer == nil
 	rp.mu.Unlock()
 
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
@@ -162,6 +177,8 @@ func (rp *RemotePeer) handleOffer(data string) error {
 			rp.initSignalDC(dc)
 		case "stdio":
 			rp.initStdioDC(dc)
+		case "auth":
+			rp.initAuthDC(dc)
 		}
 	})
 
@@ -222,7 +239,9 @@ func (rp *RemotePeer) initChatDC(dc *webrtc.DataChannel) {
 	rp.dcChat = dc
 	rp.mu.Unlock()
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		rp.manager.notifyChat(rp.peerID, string(msg.Data))
+		if rp.isAuthorized() {
+			rp.manager.notifyChat(rp.peerID, string(msg.Data))
+		}
 	})
 }
 
@@ -230,10 +249,16 @@ func (rp *RemotePeer) initTunnelDC(dc *webrtc.DataChannel) {
 	rp.mu.Lock()
 	rp.dcTunnel = dc
 	rp.mu.Unlock()
-	dc.OnOpen(func() { rp.manager.notifyTunnelOpen(rp.peerID) })
+	dc.OnOpen(func() {
+		if rp.isAuthorized() {
+			rp.manager.notifyTunnelOpen(rp.peerID)
+		}
+	})
 	dc.OnClose(func() { rp.manager.notifyTunnelClose(rp.peerID) })
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		rp.manager.notifyTunnelMsg(rp.peerID, msg.Data)
+		if rp.isAuthorized() {
+			rp.manager.notifyTunnelMsg(rp.peerID, msg.Data)
+		}
 	})
 }
 
@@ -254,11 +279,114 @@ func (rp *RemotePeer) initStdioDC(dc *webrtc.DataChannel) {
 	rp.mu.Lock()
 	rp.dcStdio = dc
 	rp.mu.Unlock()
-	dc.OnOpen(func() { rp.manager.notifyStdioOpen(rp.peerID) })
+	dc.OnOpen(func() {
+		if rp.isAuthorized() {
+			rp.manager.notifyStdioOpen(rp.peerID)
+		}
+	})
 	dc.OnClose(func() { rp.manager.notifyStdioClose(rp.peerID) })
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		rp.manager.notifyStdioMsg(rp.peerID, msg.Data)
+		if rp.isAuthorized() {
+			rp.manager.notifyStdioMsg(rp.peerID, msg.Data)
+		}
 	})
+}
+
+func (rp *RemotePeer) initAuthDC(dc *webrtc.DataChannel) {
+	rp.mu.Lock()
+	rp.dcAuth = dc
+	rp.mu.Unlock()
+
+	dc.OnOpen(func() {
+		if rp.manager.authorizer != nil {
+			nonce, _ := auth.NewChallenge()
+			rp.mu.Lock()
+			rp.lastChallenge = nonce
+			rp.mu.Unlock()
+			msg, _ := json.Marshal(auth.Message{Type: "challenge", Nonce: nonce})
+			dc.Send(msg)
+		}
+	})
+
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		var authMsg auth.Message
+		if err := json.Unmarshal(msg.Data, &authMsg); err != nil {
+			return
+		}
+
+		switch authMsg.Type {
+		case "challenge":
+			if rp.manager.authenticator != nil {
+				sig, _ := rp.manager.authenticator.Sign([]byte(authMsg.Nonce))
+				identity := base64.StdEncoding.EncodeToString(rp.manager.authenticator.PublicKey())
+				resp, _ := json.Marshal(auth.Message{
+					Type:      "response",
+					Nonce:     authMsg.Nonce,
+					Token:     rp.manager.authenticator.Token(),
+					Identity:  identity,
+					Signature: base64.StdEncoding.EncodeToString(sig),
+				})
+				dc.Send(resp)
+			}
+		case "response":
+			if rp.manager.authorizer != nil {
+				pubKey, _ := base64.StdEncoding.DecodeString(authMsg.Identity)
+
+				authorized := false
+				if ta, ok := rp.manager.authorizer.(auth.TokenAuthorizer); ok {
+					authorized = ta.AuthorizeWithToken(pubKey, authMsg.Token)
+				} else {
+					authorized = rp.manager.authorizer.Authorize(pubKey)
+				}
+
+				if auth.Verify(pubKey, authMsg.Nonce, authMsg.Signature) &&
+					authorized &&
+					authMsg.Nonce == rp.lastChallenge {
+					rp.mu.Lock()
+					rp.authenticated = true
+					rp.mu.Unlock()
+					logger.Info("[" + rp.peerID + "] Authenticated successfully")
+					resp, _ := json.Marshal(auth.Message{Type: "success"})
+					dc.Send(resp)
+					rp.manager.notifyAuth(rp.peerID, true)
+					if dc := rp.DataChannelTunnel(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+						rp.manager.notifyTunnelOpen(rp.peerID)
+					}
+					if dc := rp.DataChannelStdio(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+						rp.manager.notifyStdioOpen(rp.peerID)
+					}
+				} else {
+					logger.Error("[" + rp.peerID + "] Authentication failed")
+					resp, _ := json.Marshal(auth.Message{Type: "error", Error: "unauthorized"})
+					dc.Send(resp)
+					rp.manager.notifyAuth(rp.peerID, false)
+					rp.Close()
+				}
+			}
+		case "success":
+			rp.mu.Lock()
+			rp.authenticated = true
+			rp.mu.Unlock()
+			logger.Info("[" + rp.peerID + "] Server authenticated us")
+			rp.manager.notifyAuth(rp.peerID, true)
+			if dc := rp.DataChannelTunnel(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+				rp.manager.notifyTunnelOpen(rp.peerID)
+			}
+			if dc := rp.DataChannelStdio(); dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+				rp.manager.notifyStdioOpen(rp.peerID)
+			}
+		case "error":
+			logger.Error("[" + rp.peerID + "] Server rejected authentication: " + authMsg.Error)
+			rp.manager.notifyAuth(rp.peerID, false)
+			rp.Close()
+		}
+	})
+}
+
+func (rp *RemotePeer) isAuthorized() bool {
+	rp.mu.RLock()
+	defer rp.mu.RUnlock()
+	return rp.authenticated
 }
 
 func (rp *RemotePeer) teardown() *webrtc.PeerConnection {
@@ -268,7 +396,7 @@ func (rp *RemotePeer) teardown() *webrtc.PeerConnection {
 		logger.Debug("[" + rp.peerID + "] Tearing down connection")
 	}
 	pc := rp.pc
-	rp.pc, rp.dcTunnel, rp.dcChat, rp.dcSignal, rp.dcStdio = nil, nil, nil, nil, nil
+	rp.pc, rp.dcTunnel, rp.dcChat, rp.dcSignal, rp.dcStdio, rp.dcAuth = nil, nil, nil, nil, nil, nil
 	return pc
 }
 
@@ -285,7 +413,7 @@ func (rp *RemotePeer) handleReconnect() {
 	if pc := rp.teardown(); pc != nil {
 		pc.Close()
 	}
-	time.Sleep(1 * time.Second)
+	time.Sleep(ReconnectDelay)
 	rp.manager.requestPeerConnection(rp.peerID)
 }
 
@@ -305,6 +433,9 @@ func (rp *RemotePeer) OnTunnelOpen(fn func()) {
 }
 
 func (rp *RemotePeer) SendChat(msg string) error {
+	if !rp.isAuthorized() {
+		return errors.New("not authorized")
+	}
 	rp.mu.RLock()
 	dc := rp.dcChat
 	rp.mu.RUnlock()
@@ -327,8 +458,8 @@ func (rp *RemotePeer) sendSignalRelay(data []byte) error {
 func nextMsgID(selfID string) string {
 	seq := atomic.AddUint64(&msgSeq, 1)
 	prefix := selfID
-	if len(prefix) > 4 {
-		prefix = prefix[:4]
+	if len(prefix) > PeerIDPrefixLen {
+		prefix = prefix[:PeerIDPrefixLen]
 	}
 	return fmt.Sprintf("%s_%s_%d", time.Now().Format("150405.000"), prefix, seq)
 }

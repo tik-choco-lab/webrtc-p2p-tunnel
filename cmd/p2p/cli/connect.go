@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/auth"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
 	signalclient "github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
@@ -47,6 +48,17 @@ var connectCmd = &cobra.Command{
 		}
 
 		manager := rtc.NewRTCManager(sig, selfID, currentRoomID, false)
+
+		aStr := viper.GetString("auth")
+		authenticator, err := auth.CreateAuthenticator(aStr)
+		if err != nil {
+			logger.Error("Failed to create authenticator: " + err.Error())
+			return
+		}
+		if authenticator != nil {
+			manager.SetAuthenticator(authenticator)
+			logger.Info("Authentication enabled")
+		}
 
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

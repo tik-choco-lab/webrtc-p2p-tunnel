@@ -5,9 +5,12 @@ import (
 	"sync"
 
 	"github.com/pion/webrtc/v3"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/auth"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
 )
+
+const DefaultHops = 5
 
 type PeerRole string
 
@@ -31,6 +34,9 @@ type RTCManager struct {
 	mu    sync.RWMutex
 	peers map[string]*RemotePeer
 
+	authorizer    auth.Authorizer
+	authenticator auth.Authenticator
+
 	chatHandlers        []func(string, string)
 	tunnelMsgHandlers   []func(string, []byte)
 	stdioMsgHandlers    []func(string, []byte)
@@ -39,6 +45,7 @@ type RTCManager struct {
 	tunnelCloseHandlers []func(string)
 	stdioCloseHandlers  []func(string)
 	peerConnHandlers    []func(string)
+	authPathHandlers    []func(string, bool)
 	quit                chan struct{}
 }
 
@@ -60,6 +67,9 @@ func NewRTCManager(sig *signal.Client, selfID, roomID string, isServer bool) *RT
 	sig.OnReconnect(m.requestAllPeers)
 	return m
 }
+
+func (m *RTCManager) SetAuthorizer(a auth.Authorizer)       { m.authorizer = a }
+func (m *RTCManager) SetAuthenticator(a auth.Authenticator) { m.authenticator = a }
 
 func (m *RTCManager) Close() {
 	close(m.quit)
@@ -163,7 +173,7 @@ func (m *RTCManager) sendSignal(msg signal.Message) {
 		msg.MsgID = nextMsgID(m.selfID)
 	}
 	if msg.Hops == 0 {
-		msg.Hops = 5
+		msg.Hops = DefaultHops
 	}
 	m.relaySignal(msg)
 	if msg.SenderId == m.selfID {
@@ -261,6 +271,11 @@ func (m *RTCManager) notifyPeerConnected(pID string) {
 		h(pID)
 	}
 }
+func (m *RTCManager) notifyAuth(pID string, success bool) {
+	for _, h := range m.authPathHandlers {
+		h(pID, success)
+	}
+}
 
 func (m *RTCManager) OnChatMessage(h func(string, string)) {
 	m.chatHandlers = append(m.chatHandlers, h)
@@ -285,6 +300,9 @@ func (m *RTCManager) OnStdioClose(h func(string)) {
 }
 func (m *RTCManager) OnPeerConnected(h func(string)) {
 	m.peerConnHandlers = append(m.peerConnHandlers, h)
+}
+func (m *RTCManager) OnAuth(h func(string, bool)) {
+	m.authPathHandlers = append(m.authPathHandlers, h)
 }
 
 func (m *RTCManager) GetPeer(id string) *RemotePeer {

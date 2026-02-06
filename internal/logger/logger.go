@@ -110,6 +110,12 @@ func Debug(message string, fields ...zap.Field) {
 	}
 }
 
+func Warn(message string, fields ...zap.Field) {
+	if log != nil {
+		log.Warn(message, fields...)
+	}
+}
+
 func Error(message string, fields ...zap.Field) {
 	if log != nil {
 		log.Error(message, fields...)

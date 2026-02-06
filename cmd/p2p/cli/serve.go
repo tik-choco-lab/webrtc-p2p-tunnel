@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/auth"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/proxy"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
@@ -20,12 +21,17 @@ import (
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/udp"
 )
 
+const (
+	RoomIDByteLen = 4
+	ListenPort    = -1
+)
+
 var (
 	serveForwards []string
 )
 
 func generateRoomID() string {
-	b := make([]byte, 4)
+	b := make([]byte, RoomIDByteLen)
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
@@ -88,15 +94,43 @@ var serveCmd = &cobra.Command{
 
 		manager := rtc.NewRTCManager(sig, selfID, currentRoomID, true)
 
+		aStr := viper.GetString("auth")
+		if cmd.Flags().Changed("auth") && aStr == "" {
+			aStr = auth.GetDefaultAuthorizedKeysPath()
+		}
+		alists := viper.GetStringSlice("allow")
+
+		if aStr != "" || len(alists) > 0 {
+			ma := &auth.MultiAuthorizer{}
+			if aStr != "" {
+				authorizer, err := auth.CreateAuthorizer(aStr)
+				if err != nil {
+					logger.Error("Failed to create authorizer: " + err.Error())
+					return
+				}
+				ma.Add(authorizer)
+			}
+			for _, item := range alists {
+				authorizer, err := auth.CreateAuthorizer(item)
+				if err != nil {
+					logger.Warn("Failed to create authorizer for " + item + ": " + err.Error())
+					continue
+				}
+				ma.Add(authorizer)
+			}
+			manager.SetAuthorizer(ma)
+			logger.Info("Authorization enabled")
+		}
+
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 		for _, f := range serveForwards {
 			proto, addr, _ := ParseForward(f)
 			if proto == "tcp" {
-				go tcp.ListenAndServe(manager, -1, addr)
+				go tcp.ListenAndServe(manager, ListenPort, addr)
 			} else {
-				go udp.ListenAndServe(manager, -1, addr)
+				go udp.ListenAndServe(manager, ListenPort, addr)
 			}
 		}
 

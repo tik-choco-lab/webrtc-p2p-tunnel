@@ -18,12 +18,19 @@ import (
 	signalclient "github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/signal"
 )
 
+const (
+	ChatIDPrefixLen   = 8
+	ProtocolPrefixLen = 6
+)
+
 var (
 	cfgFile string
 	verbose int
 
 	signalingURL string
 	roomID       string
+	authStr      string
+	allowList    []string
 )
 
 var RootCmd = &cobra.Command{
@@ -70,7 +77,7 @@ If a room-id is provided, it joins that room; otherwise, it generates a random o
 		println("Type a message and press Enter to send.")
 
 		manager.OnChatMessage(func(peerID string, msg string) {
-			println("[" + peerID[:8] + "] " + msg)
+			println("[" + peerID[:ChatIDPrefixLen] + "] " + msg)
 		})
 
 		go func() {
@@ -90,10 +97,10 @@ func ParseForward(f string) (string, string, int) {
 	addr := f
 	if strings.HasPrefix(f, "tcp://") {
 		proto = "tcp"
-		addr = f[6:]
+		addr = f[ProtocolPrefixLen:]
 	} else if strings.HasPrefix(f, "udp://") {
 		proto = "udp"
-		addr = f[6:]
+		addr = f[ProtocolPrefixLen:]
 	}
 
 	port := -1
@@ -131,16 +138,22 @@ func init() {
 
 func initConnect() {
 	connectCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
+	connectCmd.Flags().StringVar(&authStr, "auth", "", "Authentication (private key file path or invite code)")
 
 	viper.BindPFlag("url", connectCmd.Flags().Lookup("url"))
+	viper.BindPFlag("auth", connectCmd.Flags().Lookup("auth"))
 
 	RootCmd.AddCommand(connectCmd)
 }
 
 func initServe() {
 	serveCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
+	serveCmd.Flags().StringVar(&authStr, "auth", "", "Authorization (github:user, file path, key string, or 'invite')")
+	serveCmd.Flags().StringSliceVar(&allowList, "allow", []string{}, "Allow list (e.g. github:user, github:org/team)")
 
 	viper.BindPFlag("url", serveCmd.Flags().Lookup("url"))
+	viper.BindPFlag("auth", serveCmd.Flags().Lookup("auth"))
+	viper.BindPFlag("allow", serveCmd.Flags().Lookup("allow"))
 
 	RootCmd.AddCommand(serveCmd)
 }
