@@ -92,7 +92,7 @@ func (rp *RemotePeer) newPeerConnection() (*webrtc.PeerConnection, error) {
 		}
 		data, _ := json.Marshal(c.ToJSON())
 		rp.manager.sendSignal(signal.Message{
-			Type:       "candidate",
+			Type:       SigMsgTypeCandidate,
 			Data:       string(data),
 			SenderId:   rp.manager.selfID,
 			ReceiverId: rp.peerID,
@@ -143,7 +143,7 @@ func (rp *RemotePeer) startOffer() error {
 	}
 	data, _ := json.Marshal(offer)
 	rp.manager.sendSignal(signal.Message{
-		Type:       "offer",
+		Type:       SigMsgTypeOffer,
 		Data:       string(data),
 		SenderId:   rp.manager.selfID,
 		ReceiverId: rp.peerID,
@@ -182,7 +182,7 @@ func (rp *RemotePeer) handleOffer(data string) error {
 
 	ansData, _ := json.Marshal(answer)
 	rp.manager.sendSignal(signal.Message{
-		Type:       "answer",
+		Type:       SigMsgTypeAnswer,
 		Data:       string(ansData),
 		SenderId:   rp.manager.selfID,
 		ReceiverId: rp.peerID,
@@ -302,7 +302,7 @@ func (rp *RemotePeer) initAuthDC(dc *webrtc.DataChannel) {
 			rp.mu.Lock()
 			rp.lastChallenge = nonce
 			rp.mu.Unlock()
-			msg, _ := json.Marshal(auth.Message{Type: "challenge", Nonce: nonce})
+			msg, _ := json.Marshal(auth.Message{Type: auth.AuthMsgTypeChallenge, Nonce: nonce})
 			dc.Send(msg)
 		}
 	})
@@ -355,7 +355,7 @@ func (rp *RemotePeer) handleAuthChallenge(dc *webrtc.DataChannel, authMsg auth.M
 		rp.peerID, pubKey, authMsg.Nonce, sigShort+"..."))
 
 	resp, _ := json.Marshal(auth.Message{
-		Type:      "response",
+		Type:      auth.AuthMsgTypeResponse,
 		Nonce:     authMsg.Nonce,
 		Token:     rp.manager.authenticator.Token(),
 		Identity:  identity,
@@ -403,16 +403,19 @@ func (rp *RemotePeer) handleAuthResponse(dc *webrtc.DataChannel, authMsg auth.Me
 		rp.authenticated = true
 		rp.mu.Unlock()
 		logger.Info("[" + rp.peerID + "] Authenticated successfully")
-		resp, _ := json.Marshal(auth.Message{Type: "success"})
+		resp, _ := json.Marshal(auth.Message{Type: auth.AuthMsgTypeSuccess})
 		dc.Send(resp)
 		rp.manager.notifyAuth(rp.peerID, true)
 		rp.notifyChannelsOnAuth()
 	} else {
 		logger.Error("[" + rp.peerID + "] Authentication failed")
-		resp, _ := json.Marshal(auth.Message{Type: "error", Error: "unauthorized"})
+		resp, _ := json.Marshal(auth.Message{Type: auth.AuthMsgTypeError, Error: "unauthorized"})
 		dc.Send(resp)
 		rp.manager.notifyAuth(rp.peerID, false)
-		rp.Close()
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			rp.Close()
+		}()
 	}
 }
 

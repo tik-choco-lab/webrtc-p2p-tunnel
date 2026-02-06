@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	udpTimeout         = 30 * time.Second
-	tunnelReadyTimeout = 30 * time.Second
-	maxUDPSize         = 65535
-	cleanupInterval    = 10 * time.Second
-	retryInterval      = 100 * time.Millisecond
+	UDPTimeout         = 30 * time.Second
+	TunnelReadyTimeout = 30 * time.Second
+	MaxUDPSize         = 65535
+	CleanupInterval    = 10 * time.Second
+	RetryInterval      = 100 * time.Millisecond
 )
 
 type manager struct {
@@ -69,7 +69,7 @@ func (m *manager) serve(listenPort int) error {
 }
 
 func (m *manager) readLocalPackets() {
-	buf := make([]byte, maxUDPSize)
+	buf := make([]byte, MaxUDPSize)
 	for {
 		n, addr, err := m.localConn.ReadFrom(buf)
 		if err != nil {
@@ -83,7 +83,7 @@ func (m *manager) readLocalPackets() {
 		m.mu.RUnlock()
 
 		if !ok {
-			peerID, err := m.waitForTunnelReady(tunnelReadyTimeout)
+			peerID, err := m.waitForTunnelReady(TunnelReadyTimeout)
 			if err != nil {
 				logger.Error("Tunnel not ready for UDP: " + err.Error())
 				continue
@@ -108,7 +108,7 @@ func (m *manager) readLocalPackets() {
 
 		payload := append([]byte(nil), buf[:n]...)
 		if err := m.sendTo(pID, rtc.TunnelMessage{
-			Type:    "data",
+			Type:    rtc.TunnelMsgTypeData,
 			ConnID:  connID,
 			Payload: payload,
 		}); err != nil {
@@ -123,7 +123,7 @@ func (m *manager) onTunnelMessage(peerID string, data []byte) {
 		return
 	}
 
-	if tm.Type == "data" {
+	if tm.Type == rtc.TunnelMsgTypeData {
 		m.handleData(peerID, tm)
 	}
 }
@@ -182,7 +182,7 @@ func (m *manager) handleData(peerID string, tm rtc.TunnelMessage) {
 }
 
 func (m *manager) forwardTargetToTunnel(connID string, conn net.Conn, peerID string) {
-	buf := make([]byte, maxUDPSize)
+	buf := make([]byte, MaxUDPSize)
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
@@ -194,7 +194,7 @@ func (m *manager) forwardTargetToTunnel(connID string, conn net.Conn, peerID str
 
 			payload := append([]byte(nil), buf[:n]...)
 			if errSend := m.sendTo(peerID, rtc.TunnelMessage{
-				Type:    "data",
+				Type:    rtc.TunnelMsgTypeData,
 				ConnID:  connID,
 				Payload: payload,
 			}); errSend != nil {
@@ -239,16 +239,16 @@ func (m *manager) waitForTunnelReady(timeout time.Duration) (string, error) {
 		if time.Now().After(deadline) {
 			return "", errors.New("timeout")
 		}
-		time.Sleep(retryInterval)
+		time.Sleep(RetryInterval)
 	}
 }
 
 func (m *manager) cleanup() {
-	ticker := time.NewTicker(cleanupInterval)
+	ticker := time.NewTicker(CleanupInterval)
 	for range ticker.C {
 		m.mu.Lock()
 		for id, uc := range m.conns {
-			if time.Since(uc.lastSeen) > udpTimeout {
+			if time.Since(uc.lastSeen) > UDPTimeout {
 				if uc.targetConn != nil {
 					uc.targetConn.Close()
 				}

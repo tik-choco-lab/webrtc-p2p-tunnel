@@ -95,7 +95,7 @@ var serveCmd = &cobra.Command{
 		manager := rtc.NewRTCManager(sig, selfID, currentRoomID, true)
 
 		aStr := viper.GetString("auth")
-		if cmd.Flags().Changed("auth") && aStr == "" {
+		if aStr == "__DEFAULT__" {
 			aStr = auth.GetDefaultAuthorizedKeysPath()
 		}
 		alists := viper.GetStringSlice("allow")

@@ -72,17 +72,10 @@ func InitWithOptions(opts Options) {
 			consoleOutput = os.Stderr
 		}
 
-		if opts.Verbosity >= 2 {
+		if opts.Verbosity >= 1 || opts.UseStderr {
 			consoleCore := zapcore.NewCore(
 				zapcore.NewConsoleEncoder(consoleEncoderConfig),
 				zapcore.AddSync(consoleOutput),
-				logLevel,
-			)
-			log = zap.New(zapcore.NewTee(fileCore, consoleCore))
-		} else if opts.UseStderr {
-			consoleCore := zapcore.NewCore(
-				zapcore.NewConsoleEncoder(consoleEncoderConfig),
-				zapcore.AddSync(os.Stderr),
 				logLevel,
 			)
 			log = zap.New(zapcore.NewTee(fileCore, consoleCore))

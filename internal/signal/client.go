@@ -2,12 +2,19 @@ package signal
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
+)
+
+const (
+	MaxRetries     = 10
+	BaseRetryDelay = 1 * time.Second
+	MaxRetryDelay  = 30 * time.Second
 )
 
 type Client struct {
@@ -33,9 +40,9 @@ func NewClient(wsURL, selfID, roomID string) (*Client, error) {
 		selfID:         selfID,
 		roomID:         roomID,
 		wsURL:          wsURL,
-		maxRetries:     10,
-		baseRetryDelay: 1 * time.Second,
-		maxRetryDelay:  30 * time.Second,
+		maxRetries:     MaxRetries,
+		baseRetryDelay: BaseRetryDelay,
+		maxRetryDelay:  MaxRetryDelay,
 		closeChan:      make(chan struct{}),
 	}
 
@@ -165,8 +172,8 @@ func (c *Client) reconnect() {
 		c.mu.Unlock()
 
 		delay := c.calculateBackoff(currentRetry)
-		logger.Debug("Attempting to reconnect in " + delay.String() + " (attempt " +
-			string(rune(currentRetry)) + "/" + string(rune(c.maxRetries)) + ")...")
+		logger.Debug(fmt.Sprintf("Attempting to reconnect in %v (attempt %d/%d)...",
+			delay, currentRetry, c.maxRetries))
 
 		select {
 		case <-time.After(delay):

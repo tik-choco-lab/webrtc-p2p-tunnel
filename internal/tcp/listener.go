@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	tunnelReadyTimeout = 30 * time.Second
-	tcpBufferSize      = 4096
-	retryInterval      = 50 * time.Millisecond
+	TunnelReadyTimeout = 30 * time.Second
+	TCPBufferSize      = 4096
+	RetryInterval      = 50 * time.Millisecond
 )
 
 type manager struct {
@@ -94,7 +94,7 @@ func (m *manager) serve(listenPort int, remoteAddr string) error {
 func (m *manager) handleLocalConnection(conn net.Conn) {
 	connID := uuid.NewString()
 
-	peerID, err := m.waitForTunnelReady(tunnelReadyTimeout)
+	peerID, err := m.waitForTunnelReady(TunnelReadyTimeout)
 	if err != nil {
 		logger.Error("tunnel not ready: " + err.Error())
 		conn.Close()
@@ -104,7 +104,7 @@ func (m *manager) handleLocalConnection(conn net.Conn) {
 	m.trackConn(connID, conn, peerID, true)
 
 	connectMsg := rtc.TunnelMessage{
-		Type:   "connect",
+		Type:   rtc.TunnelMsgTypeConnect,
 		ConnID: connID,
 	}
 	if err := m.sendTo(peerID, connectMsg); err != nil {
@@ -140,7 +140,7 @@ func (m *manager) waitForTunnelReady(timeout time.Duration) (string, error) {
 		if time.Now().After(deadline) {
 			return "", errors.New("tunnel data channel not open")
 		}
-		time.Sleep(retryInterval)
+		time.Sleep(RetryInterval)
 	}
 }
 
@@ -149,13 +149,13 @@ func (m *manager) forwardTCPToDC(connID string) {
 	if !ok {
 		return
 	}
-	buf := make([]byte, tcpBufferSize)
+	buf := make([]byte, TCPBufferSize)
 	for {
 		n, err := tc.conn.Read(buf)
 		if n > 0 {
 			payload := append([]byte(nil), buf[:n]...)
 			if errSend := m.sendTo(tc.peerID, rtc.TunnelMessage{
-				Type:    "data",
+				Type:    rtc.TunnelMsgTypeData,
 				ConnID:  connID,
 				Payload: payload,
 			}); errSend != nil {
@@ -184,11 +184,11 @@ func (m *manager) onTunnelMessage(peerID string, data []byte) {
 		return
 	}
 	switch tm.Type {
-	case "connect":
+	case rtc.TunnelMsgTypeConnect:
 		m.handleRemoteConnect(peerID, tm)
-	case "data":
+	case rtc.TunnelMsgTypeData:
 		m.handleRemoteData(tm)
-	case "close":
+	case rtc.TunnelMsgTypeClose:
 		m.closeConn(tm.ConnID, false)
 	default:
 		logger.Debug("unknown tunnel message type: " + tm.Type)
@@ -201,7 +201,7 @@ func (m *manager) handleRemoteConnect(peerID string, tm rtc.TunnelMessage) {
 	if err != nil {
 		logger.Error("failed to connect to remote target (" + addr + "): " + err.Error())
 		_ = m.sendTo(peerID, rtc.TunnelMessage{
-			Type:   "close",
+			Type:   rtc.TunnelMsgTypeClose,
 			ConnID: tm.ConnID,
 		})
 		return
@@ -253,7 +253,7 @@ func (m *manager) closeConn(connID string, notifyRemote bool) {
 	}
 	_ = tc.conn.Close()
 	if notifyRemote && tc.notifyRemote {
-		if err := m.sendTo(tc.peerID, rtc.TunnelMessage{Type: "close", ConnID: connID}); err != nil {
+		if err := m.sendTo(tc.peerID, rtc.TunnelMessage{Type: rtc.TunnelMsgTypeClose, ConnID: connID}); err != nil {
 			logger.Error("failed to send tunnel close message: " + err.Error())
 		}
 	}

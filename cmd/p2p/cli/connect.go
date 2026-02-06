@@ -49,6 +49,9 @@ var connectCmd = &cobra.Command{
 		manager := rtc.NewRTCManager(sig, selfID, currentRoomID, false)
 
 		aStr := viper.GetString("auth")
+		if aStr == "__DEFAULT__" {
+			aStr = ""
+		}
 		authenticator, err := auth.CreateAuthenticator(aStr)
 		if err != nil {
 			logger.Error("Failed to create authenticator: " + err.Error())
@@ -62,6 +65,7 @@ var connectCmd = &cobra.Command{
 		manager.OnAuth(func(peerID string, success bool) {
 			if !success {
 				logger.Error("Authentication failed with peer " + peerID + ". Exiting.")
+				logger.Sync()
 				os.Exit(1)
 			}
 		})

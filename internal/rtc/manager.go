@@ -15,6 +15,14 @@ const DefaultHops = 5
 type PeerRole string
 
 const (
+	SigMsgTypeRequest   = "Request"
+	SigMsgTypeOffer     = "offer"
+	SigMsgTypeAnswer    = "answer"
+	SigMsgTypeCandidate = "candidate"
+	SigMsgTypePeerList  = "peer_list"
+)
+
+const (
 	RoleClient PeerRole = "client"
 	RoleServer PeerRole = "server"
 )
@@ -112,7 +120,7 @@ func (m *RTCManager) processSignal(msg signal.Message) {
 		pc.ConnectionState() == webrtc.PeerConnectionStateConnecting)
 
 	switch msg.Type {
-	case "Request":
+	case SigMsgTypeRequest:
 		if signalingStable || connActive {
 			return
 		}
@@ -120,7 +128,7 @@ func (m *RTCManager) processSignal(msg signal.Message) {
 			peer.startOffer()
 		}
 
-	case "offer":
+	case SigMsgTypeOffer:
 		if signalingStable && connActive {
 			return
 		}
@@ -134,11 +142,11 @@ func (m *RTCManager) processSignal(msg signal.Message) {
 		}
 		peer.handleOffer(msg.Data)
 
-	case "answer":
+	case SigMsgTypeAnswer:
 		peer.handleAnswer(msg.Data)
-	case "candidate":
+	case SigMsgTypeCandidate:
 		peer.handleCandidate(msg.Data)
-	case "peer_list":
+	case SigMsgTypePeerList:
 		var plMsg PeerListMessage
 		if err := json.Unmarshal([]byte(msg.Data), &plMsg); err == nil {
 			m.handlePeerList(plMsg.PeerIDs)
@@ -193,9 +201,9 @@ func (m *RTCManager) broadcastPeerList(targetPeerID string) {
 	if len(ids) == 0 {
 		return
 	}
-	plData, _ := json.Marshal(PeerListMessage{Type: "peer_list", PeerIDs: ids})
+	plData, _ := json.Marshal(PeerListMessage{Type: SigMsgTypePeerList, PeerIDs: ids})
 	m.sendSignal(signal.Message{
-		Type:       "peer_list",
+		Type:       SigMsgTypePeerList,
 		Data:       string(plData),
 		SenderId:   m.selfID,
 		ReceiverId: targetPeerID,
@@ -217,11 +225,11 @@ func (m *RTCManager) handlePeerList(ids []string) {
 }
 
 func (m *RTCManager) requestPeerConnection(peerID string) {
-	m.sendSignal(signal.Message{Type: "Request", SenderId: m.selfID, ReceiverId: peerID, RoomId: m.roomID, Role: string(m.selfRole)})
+	m.sendSignal(signal.Message{Type: SigMsgTypeRequest, SenderId: m.selfID, ReceiverId: peerID, RoomId: m.roomID, Role: string(m.selfRole)})
 }
 
 func (m *RTCManager) requestAllPeers() {
-	m.sig.Send(signal.Message{Type: "Request", SenderId: m.selfID, RoomId: m.roomID, Role: string(m.selfRole)})
+	m.sig.Send(signal.Message{Type: SigMsgTypeRequest, SenderId: m.selfID, RoomId: m.roomID, Role: string(m.selfRole)})
 }
 
 func (m *RTCManager) handleRawRelay(data []byte) {

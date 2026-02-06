@@ -139,6 +139,7 @@ func init() {
 func initConnect() {
 	connectCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
 	connectCmd.Flags().StringVar(&authStr, "auth", "", "Authentication (private key file path or invite code)")
+	connectCmd.Flags().Lookup("auth").NoOptDefVal = "__DEFAULT__"
 
 	viper.BindPFlag("url", connectCmd.Flags().Lookup("url"))
 	viper.BindPFlag("auth", connectCmd.Flags().Lookup("auth"))
@@ -149,6 +150,7 @@ func initConnect() {
 func initServe() {
 	serveCmd.Flags().StringVar(&signalingURL, "url", "wss://rtc.tik-choco.com/signaling", "Signaling server URL")
 	serveCmd.Flags().StringVar(&authStr, "auth", "", "Authorization (github:user, file path, key string, or 'invite')")
+	serveCmd.Flags().Lookup("auth").NoOptDefVal = "__DEFAULT__"
 	serveCmd.Flags().StringSliceVar(&allowList, "allow", []string{}, "Allow list (e.g. github:user, github:org/team)")
 
 	viper.BindPFlag("url", serveCmd.Flags().Lookup("url"))

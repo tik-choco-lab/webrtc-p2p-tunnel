@@ -10,6 +10,10 @@ import (
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
 )
 
+const (
+	StdinBufferSize = 32 * 1024
+)
+
 type Bridge struct {
 	manager    *rtc.RTCManager
 	mu         sync.Mutex
@@ -85,7 +89,7 @@ func (b *Bridge) Run() error {
 }
 
 func (b *Bridge) readStdin() {
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, StdinBufferSize)
 
 	for {
 		n, err := os.Stdin.Read(buf)
