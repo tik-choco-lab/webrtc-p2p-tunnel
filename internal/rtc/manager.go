@@ -347,6 +347,12 @@ func (m *RTCManager) GetServerPeers() []*RemotePeer {
 	}
 	return ps
 }
+func (m *RTCManager) BroadcastStdio(data []byte) {
+	for _, p := range m.GetAllPeers() {
+		p.SendStdio(data)
+	}
+}
+
 func (m *RTCManager) SendChatToAll(msg string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

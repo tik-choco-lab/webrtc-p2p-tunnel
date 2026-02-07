@@ -501,10 +501,21 @@ func (rp *RemotePeer) SendChat(msg string) error {
 	rp.mu.RLock()
 	dc := rp.dcChat
 	rp.mu.RUnlock()
-	if dc == nil {
-		return nil
-	}
 	return dc.SendText(msg)
+}
+
+func (rp *RemotePeer) SendStdio(data []byte) error {
+	if !rp.isAuthorized() {
+		return errors.New("not authorized")
+	}
+	rp.mu.RLock()
+	dc := rp.dcStdio
+	rp.mu.RUnlock()
+
+	if dc == nil || dc.ReadyState() != webrtc.DataChannelStateOpen {
+		return errDataChannelNotReady
+	}
+	return dc.Send(data)
 }
 
 func (rp *RemotePeer) sendSignalRelay(data []byte) error {

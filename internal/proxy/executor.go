@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/webrtc/v3"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/stdio"
@@ -133,30 +132,26 @@ func (e *Executor) startCommand() error {
 
 func (e *Executor) forwardStream(reader io.ReadCloser, streamType stdio.StreamType) {
 	buf := make([]byte, 32*1024)
-
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			data := stdio.Wrap(streamType, buf[:n])
-
-			e.mu.Lock()
-			peer := e.activePeer
-			e.mu.Unlock()
-
-			if peer != nil {
-				dc := peer.DataChannelStdio()
-				if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-					dc.Send(data)
-				}
-			}
+			e.broadcastOutput(streamType, buf[:n])
 		}
-
 		if err != nil {
-			if err != io.EOF {
-				logger.Debug("stream read error: " + err.Error())
-			}
+			e.handleReadError(err)
 			break
 		}
+	}
+}
+
+func (e *Executor) broadcastOutput(streamType stdio.StreamType, payload []byte) {
+	data := stdio.Wrap(streamType, payload)
+	e.manager.BroadcastStdio(data)
+}
+
+func (e *Executor) handleReadError(err error) {
+	if err != io.EOF {
+		logger.Debug("stream read error: " + err.Error())
 	}
 }
 

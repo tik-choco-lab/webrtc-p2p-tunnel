@@ -5,7 +5,6 @@ import (
 	"os"
 	"sync"
 
-	"github.com/pion/webrtc/v3"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/logger"
 	"github.com/tik-choco-lab/webrtc-p2p-tunnel/internal/rtc"
 )
@@ -49,25 +48,7 @@ func (b *Bridge) Run() error {
 	})
 
 	b.manager.OnStdioOpen(func(peerID string) {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-
-		if !b.connected {
-			b.connected = true
-			b.activePeer = b.manager.GetPeer(peerID)
-			logger.Debug("stdio bridge connected to peer: " + peerID)
-
-			if len(b.buffer) > 0 {
-				logger.Debug("Flushing buffered stdin data...")
-				dc := b.activePeer.DataChannelStdio()
-				if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-					for _, data := range b.buffer {
-						dc.Send(data)
-					}
-				}
-				b.buffer = nil
-			}
-		}
+		b.handleStdioOpen(peerID)
 	})
 
 	b.manager.OnStdioClose(func(peerID string) {
@@ -88,38 +69,69 @@ func (b *Bridge) Run() error {
 	return nil
 }
 
+func (b *Bridge) handleStdioOpen(peerID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.connected = true
+	b.activePeer = b.manager.GetPeer(peerID)
+	logger.Debug("stdio bridge connected to peer: " + peerID)
+
+	b.flushBuffer(b.activePeer)
+}
+
+func (b *Bridge) flushBuffer(peer *rtc.RemotePeer) {
+	if len(b.buffer) == 0 || peer == nil {
+		return
+	}
+
+	logger.Debug("Flushing buffered stdin data...")
+	for _, data := range b.buffer {
+		peer.SendStdio(data)
+	}
+	b.buffer = nil
+}
+
 func (b *Bridge) readStdin() {
 	buf := make([]byte, StdinBufferSize)
-
 	for {
 		n, err := os.Stdin.Read(buf)
 		if n > 0 {
-			data := Wrap(StreamStdin, buf[:n])
-
-			b.mu.Lock()
-			if b.connected && b.activePeer != nil {
-				dc := b.activePeer.DataChannelStdio()
-				if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-					if err := dc.Send(data); err != nil {
-						logger.Debug("Failed to send stdin data: " + err.Error())
-					}
-				}
-			} else {
-				b.buffer = append(b.buffer, data)
-				logger.Debug("Buffering stdin data (not connected yet)")
-			}
-			b.mu.Unlock()
+			b.processInput(buf[:n])
 		}
-
 		if err != nil {
-			if err != io.EOF {
-				logger.Debug("stdin read error: " + err.Error())
-			}
+			b.handleReadError(err)
 			break
 		}
 	}
-
 	close(b.done)
+}
+
+func (b *Bridge) processInput(payload []byte) {
+	data := Wrap(StreamStdin, payload)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.sendOrBuffer(data)
+}
+
+func (b *Bridge) sendOrBuffer(data []byte) {
+	if !b.connected {
+		b.bufferInput(data)
+		return
+	}
+	b.manager.BroadcastStdio(data)
+}
+
+func (b *Bridge) bufferInput(data []byte) {
+	b.buffer = append(b.buffer, data)
+	logger.Debug("Buffering stdin data (not connected yet)")
+}
+
+func (b *Bridge) handleReadError(err error) {
+	if err != io.EOF {
+		logger.Debug("stdin read error: " + err.Error())
+	}
 }
 
 func (b *Bridge) keepAlive() {
